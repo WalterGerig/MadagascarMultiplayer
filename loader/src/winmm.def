@@ -1,0 +1,6 @@
+LIBRARY winmm
+EXPORTS
+    timeGetTime
+    timeBeginPeriod
+    timeEndPeriod
+    timeGetDevCaps

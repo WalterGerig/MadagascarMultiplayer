@@ -1,0 +1,147 @@
+================================================================================
+DOKUMENTATION: PHASE 3 - CONFIG-SYSTEM & SICHERE INITIALISIERUNG [0.5.8-PHASE3-CONFIG-SAFE-INIT]
+================================================================================
+Projekt: Madagascar (2005) Multiplayer Mod
+Modul:   MadMultiplayer.dll (Client) & d3d8.dll (Proxy)
+Datum:   2026-09-22 19:15
+Autor:   Senior C++ Game Reverse Engineer / Systems Modding Architect
+Status:  Config-System & Sichere Delay-Initialisierung Vollständig Implementiert & Kompiliert
+
+0. CRASH-BEHEBUNG & CONFIG-SYSTEM (multiplayer_config.ini)
+----------------------------------------------------------
+- Der aggressive Speicherscanner wurde restlos entfernt, da das Scannen nicht-committeter
+  Speicherbereiche zu sofortigen Startabstürzen (Access Violations) führte.
+- Sichere verzögerte Initialisierung:
+  * InitThreadProc wartet stabil und sauber auf das Hauptfenster RWSConsoleD3D8.
+  * Das IDirect3DDevice8 wird sicher über den COM-Proxy / d3d8.dll Export abgefragt.
+- Multiplayer Config System (multiplayer_config.ini):
+  * Config-Manager liest und erzeugt multiplayer_config.ini automatisch im Ordner patches/.
+  * Unterstützte Parameter:
+    - [Keybinds] ToggleOverlay (Standard: 113 / F2), ToggleWidescreen (Standard: 57 / Taste 9)
+    - [Network] DefaultIP (127.0.0.1), DefaultPort (27015)
+    - [Display] AutoEnableWidescreen (0 = Aus, 1 = Ein)
+    - [Debug] EnableFileLogging (1 = Ein, 0 = Aus)
+- Borderless Widescreen Modus & Overlay reagieren auf die in der INI konfigurierten Tasten.
+
+1. VOLLSTÄNDIGE ENTFERNUNG VON USER32.DLL INLINE-HOOKS (KEIN ABSTURZ BEIM START)
+---------------------------------------------------------------------------------
+- Alle Versuche, user32.dll (ClipCursor / SetCursorPos) im Speicher per Inline-Hook
+  oder Trampoline zu überschreiben, wurden restlos entfernt.
+- Dadurch gibt es keine DEP/Access-Violation-Crashes (0xC0000005) mehr beim Start der Game.exe.
+- Das Maus-Handling erfolgt vollständig über die Subclassing-Funktion HandleGameWndProc:
+  * Bei WM_SETCURSOR: Wenn das Overlay aktiv ist (m_showOverlay == true) oder das
+    Spielfenster nicht den Vordergrund hat (GetForegroundWindow() != m_hGameWindow),
+    wird UnlockMouseCursor() aufgerufen (::ClipCursor(nullptr) + Pfeilzeiger IDC_ARROW)
+    und sofort TRUE zurückgegeben. Dies verhindert, dass RenderWare die Maus einsperrt.
+  * Bei WM_MOUSEMOVE, WM_SYSCOMMAND (SC_MOVE, SC_SIZE) und WM_ENTERSIZEMOVE wird
+    der Cursor ebenfalls sofort freigegeben.
+
+2. SAUBERE D3D8 COM-INTERCEPTION (MadLoader proxy_d3d8.cpp & MadMultiplayer.dll)
+--------------------------------------------------------------------------------
+- proxy_d3d8.cpp implementiert Direct3D8Proxy (Wrapping von IDirect3D8), welches
+  beim CreateDevice-Aufruf von RenderWare das tatsächliche IDirect3DDevice8 abfängt.
+- Dual-Link Synchronisation:
+  1. Direkter Push: Ruft via GetProcAddress sofort MadMultiplayer_OnDeviceCreated(pDevice, hWnd) auf,
+     falls MadMultiplayer.dll bereits gemappt ist.
+  2. Pull/Polling Fallback: D3D8Hook::InitThreadProc sucht in einem 30s-Hintergrund-Thread
+     nach MadLoader_GetD3D8Device(), das von d3d8.dll exportiert wird.
+- Das Device wird an Slot 14 (Reset) und Slot 35 (EndScene) VTable-gehookt.
+- In Hooked_EndScene werden die RenderStates sauber gesichert, ImGui gerendert und
+  die RenderStates wiederhergestellt.
+================================================================================
+
+
+2. FENSTER-DRIFT & MAUS-LOCK FIX (IAT HOOKING: SetCursorPos & ClipCursor)
+-----------------------------------------------------------------------
+Problembeschreibung:
+RenderWare 3.7 ruft in seiner 60Hz-Hauptschleife kontinuierlich `SetCursorPos` und `ClipCursor` auf,
+um die Maus in der Fenster-Mitte für die Kamerasteuerung zu zentrieren. Dies verhinderte das
+freie Bewegen der Maus im ImGui-Overlay und führte beim Verschieben des Konsolenfensters zum Driften.
+
+Lösung (IAT-Hooking in Game.exe):
+- IAT-Patching für `SetCursorPos` und `ClipCursor` aus `user32.dll`.
+- Wenn das Overlay aktiv ist (`m_showOverlay == true`) ODER das aktive Vordergrund-Fenster (`GetForegroundWindow()`)
+  nicht das Spielefenster ist (z. B. bei aktivem Konsolenfenster):
+  * `Hooked_SetCursorPos`: ignoriert Zentrier-Aufrufe vollständig (`return TRUE`).
+  * `Hooked_ClipCursor`: hebt Mausbegrenzungen vollständig auf (`ClipCursor(nullptr)`).
+- Ergebnis: Die Maus bewegt sich flüssig über das Overlay und den Desktop; Fensterdrifts bei Hauptfenster und Konsole sind vollständig eliminiert.
+
+3. ALT-TAB & DEVICE LOST HANDLING
+---------------------------------
+- `WM_KILLFOCUS` & `WM_ACTIVATEAPP` in WndProc fangen Fokusverluste ab, rufen `io.ClearEventsQueue()` / `io.AddFocusEvent(false)`
+  auf und verhindern hängende Tastenzustände nach Alt-Tab.
+- `Hooked_Reset` (Slot 14) invalidiert (`ImGui_ImplDX8_InvalidateDeviceObjects`) und erzeugt (`ImGui_ImplDX8_CreateDeviceObjects`)
+  die D3D8 Device Objects bei Auflösungswechseln und Alt-Tab neu.
+
+3. DIRECT3D 8 VTABLE HOOKING & IMGUI INTEGRATION
+------------------------------------------------
+A. proxy_d3d8.cpp (MadLoader d3d8.dll Proxy):
+   - Hooking von `IDirect3D8::CreateDevice` (VTable Slot 15).
+   - Bei erfolgreicher Device-Erstellung Abfangen von `IDirect3DDevice8` und Hooking
+     von `Reset` (Slot 14) und `EndScene` (Slot 35).
+   - Export von `MadLoader_GetD3D8Device()`.
+
+B. MadMultiplayer.dll (D3D8Hook Subsystem):
+   - In-Process VTable Hooking via Dummy Device Probing (`Direct3DCreate8(220)`).
+   - Abfangen von VTable Slot 35 (`EndScene`) und Slot 14 (`Reset`).
+   - Einbindung des DirectX 8 Dear ImGui Backends (`imgui_impl_dx8.h` / `.cpp`) sowie
+     des Win32 Backends (`imgui_impl_win32.h` / `.cpp`).
+   - Eigenständiger minimaler D3D8 Header (`vendor/d3d8/d3d8_minimal.h`) zur Vermeidung
+     obsoleter SDK-Abhängigkeiten.
+
+4. DIAGNOSE- & LOGGING-SUBSYSTEM (multiplayer_debug.log)
+------------------------------------------------------
+Zur lückenlosen Systemdiagnose wurde die Logging-Klasse `Logger` implementiert:
+- **Live File Logger:** schreibt synchron alle Events mit Zeitstempel & Thread-ID in `multiplayer_debug.log` (Spieleordner) sowie in `AllocConsole()`.
+- **Automatische Diagnosen:**
+  * Protokolliert die HWND-Adresse von `FindWindowA("RWSConsoleD3D8")`.
+  * Protokolliert VTable-Swap Adressen (Original `EndScene` vs. Hooked `EndScene`).
+  * Ticks & Frame Counts (Frames 1, 10, 100, 1000...) zur visuellen Bestätigung, dass der D3D8 Render-Hook aktiv ist.
+  * Protokolliert JEDEN eingehenden Tastendruck in WndProc mit dem virtuellen Key-Code.
+- **Mehrfach-Hotkeys & Fallback Direct Key Check:**
+  * Menü reagiert in WndProc auf **`F2`**, **`F3`** und **`INSERT`** (Einfügen).
+  * Ergänzend führt der 60-Hz Worker-Thread einen direkten Polling-Check via `GetAsyncKeyState(VK_F2)` / `VK_F3` / `VK_INSERT` mit Entprellung durch.
+- **Diagnostic Render Test (Auto-Show):**
+  * Das ImGui-Overlay ist beim Start standardmäßig auf `m_showOverlay = true` geschaltet.
+- **ImGui "Debug & Engine Logs" Tab:**
+  * Live-Logfenster direkt im Overlay, das die letzten 500 Logmeldungen der Engine anzeigt.
+
+5. GEÄNDERTE & NEUE DATEIEN
+---------------------------
+- `client/vendor/d3d8/d3d8_minimal.h` [NEW]
+- `client/vendor/imgui/` (Core ImGui + ImGui Win32 & DX8 Backends) [NEW]
+- `client/include/D3D8Hook.h` [NEW]
+- `client/src/D3D8Hook.cpp` [NEW]
+- `client/src/dllmain.cpp` [MODIFY]
+- `client/CMakeLists.txt` [MODIFY]
+- `external github tools/MadagascarPatchLoader/MadLoader/src/proxy_d3d8.cpp` [MODIFY]
+- `docs/02_directx8_imgui_hook.txt` [NEW]
+
+6. VERIFIKATION & BUILD STATUS
+------------------------------
+- Kompilierung via CMake + MSVC x86 Release erfolgreich beendet.
+- Ausgabe: `F:/Madagascar Multiplayer/client/build/Release/MadMultiplayer.dll`
+- Proxy: `F:/Madagascar Multiplayer/external github tools/MadagascarPatchLoader/MadLoader/build/Release/d3d8.dll`
+
+7. POST-INIT D3D8 DEVICE ACQUISITION & WIDESCREEN PIPELINE [0.5.9]
+------------------------------------------------------------------
+A. Statische RenderWare Device-Auflösung:
+   - Timing-Problem gelöst: RenderWare 3.7 initialisiert IDirect3DDevice8 statisch vor oder während WinMain.
+   - Die globale Zeigervariable in Game.exe liegt verbindlich an Offset 0x0022CE78 (0x0062CE78 bei Modulbasis 0x00400000).
+   - D3D8Hook greift *(IDirect3DDevice8**)0x0062CE78 direkt ab, tauscht die VTable-Slots 14 (Reset), 35 (EndScene),
+     37 (SetTransform) und 40 (SetViewport) ohne Absturzrisiko und startet den ImGui-Renderkreislauf.
+
+B. Synchroner Backbuffer & Viewport Reset (Taste 9 / AutoEnableWidescreen):
+   - Win32-Fenster wechselt auf WS_POPUP mit Desktop-Größe (z.B. 1920x1080 / 3840x2160).
+   - In OnEndScene (Render-Thread) wird der synchrone Device-Reset ausgeführt:
+     1. ImGui_ImplDX8_InvalidateDeviceObjects()
+     2. pDevice->Reset(&d3dpp) mit BackBufferWidth/Height = Monitorauflösung und D3DSWAPEFFECT_DISCARD.
+     3. Aktualisierung des RenderWare D3DPRESENT_PARAMETERS Speicherbereichs (0x00631F20).
+     4. ImGui_ImplDX8_CreateDeviceObjects()
+     5. D3DVIEWPORT8 auf volle Bildschirmauflösung setzen.
+
+C. FOV & Aspect Ratio Hor+ Korrektur (Slot 37: SetTransform):
+   - Hooked_SetTransform fängt Aufrufe mit State == D3DTS_PROJECTION (3) ab.
+   - Die Matrixkomponente _11 (horizontaler Skalierungsfaktor) wird mit (4/3) / CurrentAspect multipliziert.
+   - Resultat: Kein horizontales Verzerren oder Strecken im Widescreen-Modus, natives 16:9 Sichtfeld.
+================================================================================

@@ -1,0 +1,97 @@
+================================================================================
+DOKUMENTATION: PHASE 2 - C++ DLL-SKELETT & IN-PROCESS MEMORY WORKER
+================================================================================
+Projekt: Madagascar (2005) Multiplayer Mod
+Modul:   MadMultiplayer.dll (Client)
+Datum:   2026-09-22 17:23
+Autor:   Senior C++ Game Reverse Engineer / Systems Modding Architect
+Status:  Phase 2 Implementiert & Bereit für Kompilierung
+
+1. ARCHITEKTUR & KOMPONENTEN
+----------------------------
+Das C++ Client-DLL-System (`MadMultiplayer.dll`) implementiert das native In-Process-
+Memory-Subsystem und stellt die Brücke zwischen der RenderWare 3.7 Engine (`Game.exe`)
+und den nachgelagerten Netzwerk- und Render-Schichten dar.
+
+Dateistruktur:
+- client/CMakeLists.txt: Build-Konfiguration für 32-Bit x86 Toolchain mit C++20 und statischer CRT (/MT).
+- client/include/PlayerTransform.h: Thread-sichere Kapselung der Spielertransformationen (Position, Rotation, Status).
+- client/include/MemoryManager.h: Singleton-Schnittstelle für sichere In-Process Pointer-Dereferenzierung & Patches.
+- client/src/MemoryManager.cpp: Implementierung mit isolierten SEH-Guards (__try / __except).
+- client/src/dllmain.cpp: DllMain Entry Point, Debug-Konsole (AllocConsole), 60 Hz Worker-Thread & MadPatchInit Export.
+
+2. TECHNISCHE DETAILS DER IMPLEMENTIERUNG
+-----------------------------------------
+A. DllMain & Thread-Initialisierung:
+   - Bei DLL_PROCESS_ATTACH wird mit DisableThreadLibraryCalls(hModule) Overhead reduziert.
+   - AllocConsole() erzeugt ein dediziertes Konsolenfenster für Live-Tracing.
+   - stdout, stderr und stdin werden auf CONOUT$ / CONIN$ umgeleitet.
+   - CreateThread startet MultiplayerWorkerThread, wodurch die Spielinitialisierung (WinMain)
+     keinerlei Verzögerungen erfährt.
+
+B. ASLR-Resistente Basisadressen-Ermittlung:
+   - Da die DLL in den Adressraum der Game.exe injiziert wird, liefert GetModuleHandleA(nullptr)
+     direkt die Basisadresse des Hauptmoduls (Standard: 0x00400000).
+
+C. Strukturierte Exception-Absicherung (SEH):
+   - In-Process-Pointer-Ketten können während Ladebildschirmen oder Levelübergängen ungültig
+     werden oder auf ungemappte Speicherseiten zeigen.
+   - Normale Null-Pointer-Checks (ptr != nullptr) verhindern keine Page Faults bei hängenden Zeigern.
+   - Durch die Kapselung in SafeReadUint32 / SafeReadFloat mit __try / __except(EXCEPTION_EXECUTE_HANDLER)
+     werden Page Faults (0xC0000005) ohne Absturz des Spiels abgefangen.
+   - Zur Vermeidung des MSVC-Fehlers C2712 (Konflikt zwischen SEH und C++ Destruktor-Unwinding)
+     wurden alle SEH-Blöcke in isolierten Primitiven ohne C++ Objekte ausgelagert.
+
+D. 3-Level-Pointer-Chain (aus game_memory.py):
+   - Level 1: [mod_base + 0x0021818C]
+   - Level 2: [Level 1  + 0x000000A8]
+   - Player:  [Level 2  + 0x00000230]
+   - Koordinaten:
+     * Primär:   [Player] + 0x150 (X), + 0x154 (Y), + 0x158 (Z)
+     * Sekundär: [Player] + 0x1F4 (X), + 0x1F8 (Y), + 0x1FC (Z)
+   - Kamera: mod_base + 0x002181FC (Pitch), mod_base + 0x00218220 (Yaw)
+   - Pause:  mod_base + 0x0022A520 (uint32)
+
+E. 60 Hz Worker Loop:
+   - Nutzt std::chrono::steady_clock und präzises sleep_for (~16.6ms), um exakt im 60 FPS Takt
+     den lokalen Spieler auszulesen.
+   - Schreibt die Daten thread-sicher via std::mutex in g_localTransformStore.
+
+F. MadLoader Plugin-Kompatibilität:
+   - Exportiert extern "C" __declspec(dllexport) void __cdecl MadPatchInit(void).
+   - Kann direkt in den /patches/ Ordner von MadagascarPatchLoader abgelegt werden.
+
+3. BUILD-ANWEISUNG (VISUAL STUDIO & CMAKE)
+------------------------------------------
+WICHTIG: Das Spiel ist eine 32-Bit x86 Anwendung! Ein 64-Bit Build führt zu Ladefehlern.
+
+Variante 1: Über Visual Studio Developer Command Prompt (x86)
+--------------------------------------------------------------
+1. Öffne "x86 Native Tools Command Prompt for VS 2022".
+2. Navigiere in das Client-Verzeichnis:
+   cd "F:\Madagascar Multiplayer\client"
+3. Build-Ordner anlegen & konfigurieren:
+   mkdir build
+   cd build
+   cmake -A Win32 ..
+4. Kompilieren:
+   cmake --build . --config Release
+
+Ergebnis:
+build/Release/MadMultiplayer.dll
+
+Variante 2: Über Visual Studio IDE
+-----------------------------------
+1. Visual Studio öffnen -> "CMakeLists.txt öffnen" -> client/CMakeLists.txt auswählen.
+2. In der oberen Konfigurationsleiste die Zielarchitektur auf "x86-Release" oder "x86-Debug" stellen.
+3. Menü: Erstellen -> Alle erstellen.
+
+4. INSTALLATION IM SPIEL
+------------------------
+1. Kopiere die generierte `MadMultiplayer.dll` in das `patches/`-Verzeichnis deiner Madagascar (2005) Installation.
+2. Stelle sicher, dass `MadagascarPatchLoader` (`winmm.dll` oder `d3d8.dll`) im Hauptverzeichnis des Spiels liegt.
+3. Starte `Game.exe`.
+4. Das Spiel öffnet sofort ein schwarzes Konsolenfenster mit der Aufschrift:
+   "MADAGASCAR MULTIPLAYER CLIENT DEBUG CONSOLE"
+   Sobald ein Level geladen ist, gibt die Konsole die Koordinaten mit 60 Hz aus.
+================================================================================

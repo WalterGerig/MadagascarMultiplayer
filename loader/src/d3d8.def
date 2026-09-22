@@ -1,0 +1,10 @@
+LIBRARY d3d8
+EXPORTS
+    Direct3DCreate8
+    ValidatePixelShader
+    ValidateVertexShader
+    DebugSetMute
+    Direct3D8EnableMaximizedWindowedModeShim
+    GetForcedD3D8Device
+    MadLoader_GetD3D8Device
+    MadLoader_GetD3D8FocusWindow

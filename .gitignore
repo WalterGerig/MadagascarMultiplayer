@@ -1,0 +1,33 @@
+# Build artifacts & directories
+build/
+bin/
+out/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+
+# Visual Studio files
+.vs/
+*.user
+*.suo
+*.sln.docstates
+*.VC.db
+*.VC.opendb
+
+# Compiled binaries and intermediate files
+*.obj
+*.lib
+*.exp
+*.pdb
+*.ilk
+*.idb
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+
+# Logs and runtime files
+*.log
+multiplayer_debug.log
+multiplayer_config.ini.bak
