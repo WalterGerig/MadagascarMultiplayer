@@ -8,10 +8,56 @@ echo.
 
 where cmake >nul 2>&1
 if %errorlevel% neq 0 (
-    echo [ERROR] CMake was not found in PATH!
-    echo Please install CMake 3.20+ and make sure it is added to your system PATH.
-    pause
-    exit /b 1
+    echo [*] CMake nicht direkt im PATH gefunden. Suche nach installierten Versionen...
+    
+    :: 1. Versuche CMake aus Python-Paket (requirements.txt) zu laden
+    for /f "delims=" %%I in ('python -c "import cmake, os; print(os.path.normpath(cmake.CMAKE_BIN_DIR))" 2^>nul') do (
+        if exist "%%I\cmake.exe" (
+            set "PATH=%%I;!PATH!"
+            echo  [+] Python-CMake gefunden und aktiviert: %%I
+        )
+    )
+    
+    :: 2. Versuche CMake aus Visual Studio Installationen zu laden
+    where cmake >nul 2>&1
+    if !errorlevel! neq 0 (
+        for %%P in (
+            "%ProgramFiles(x86)%\Microsoft Visual Studio\2019\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin"
+            "%ProgramFiles(x86)%\Microsoft Visual Studio\2019\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin"
+            "%ProgramFiles%\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin"
+            "%ProgramFiles%\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin"
+            "%ProgramFiles%\CMake\bin"
+            "%ProgramFiles(x86)%\CMake\bin"
+        ) do (
+            if exist "%%~P\cmake.exe" (
+                set "PATH=%%~P;!PATH!"
+                echo  [+] Visual Studio / System CMake gefunden und aktiviert: %%~P
+            )
+        )
+    )
+)
+
+where cmake >nul 2>&1
+if %errorlevel% neq 0 (
+    echo.
+    echo =======================================================
+    echo  [!] CMake 3.20+ wurde nicht gefunden!
+    echo =======================================================
+    echo.
+    set /p AUTO_INSTALL="Moechtest du alle Anforderungen automatisch ueber install_requirements.bat installieren? (J/N): "
+    if /i "!AUTO_INSTALL!"=="J" (
+        call "%~dp0install_requirements.bat"
+        where cmake >nul 2>&1
+        if !errorlevel! neq 0 (
+            echo [ERROR] CMake konnte nicht automatisch bereitgestellt werden.
+            pause
+            exit /b 1
+        )
+    ) else (
+        echo Bitte installiere CMake 3.20+ oder fuehre 'install_requirements.bat' aus.
+        pause
+        exit /b 1
+    )
 )
 
 echo [1/3] Configuring CMake project for 32-bit x86 (Win32)...

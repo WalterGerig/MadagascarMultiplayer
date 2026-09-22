@@ -1,0 +1,17 @@
+# Madagascar Multiplayer Mod - Build Tools & Python Utilities
+# ============================================================
+# Installiere alle Abhaengigkeiten mit:
+#   pip install -r requirements.txt
+# oder fuehre einfach 'install_requirements.bat' aus.
+
+# 1. CMake Build-System (ermöglicht das automatische Kompilieren ohne manuelle CMake-Installation)
+cmake>=3.20.0
+
+# 2. System- und Prozessüberwachung für Memory-Tools & Relay-Server
+psutil>=5.9.0
+
+# 3. Farbige Konsolenausgabe für Debugging & Packet Tester
+colorama>=0.4.6
+
+# 4. Memory Injection & Reverse Engineering Utilities (für Tools & Validator)
+pymem>=1.13.0

@@ -67,18 +67,29 @@ MadagascarMultiplayer/
 
 ---
 
-## 🛠️ Prerequisites
+## 🛠️ Prerequisites & Automatic Setup
 
-To build the mod from source, you need:
+### ⚡ Option A: Automatisches Setup (Empfohlen)
+Um CMake und alle Python-Entwicklungswerkzeuge automatisch einzurichten, führe einfach aus:
+```bat
+.\install_requirements.bat
+```
+*Oder installiere die Python-Abhängigkeiten direkt via pip:*
+```bash
+pip install -r requirements.txt
+```
+
+### 📋 Option B: Manuelle Voraussetzungen
+Falls du die Tools manuell installieren möchtest:
 1. **Windows 10 or 11 (64-bit)**
-2. **Visual Studio 2022** (Community or Build Tools)
+2. **Visual Studio 2019 oder 2022** (Community oder Build Tools)
    - Workload: *Desktop development with C++*
-   - Component: *MSVC v143 - VS 2022 C++ x64/x86 build tools*
-3. **CMake 3.20 or newer** (added to system `PATH`)
-4. **Python 3.10+** (optional, for running the relay server and validation scripts)
+   - Component: *MSVC C++ x64/x86 build tools*
+3. **CMake 3.20 oder neuer** (kann über `pip install -r requirements.txt` oder `winget install Kitware.CMake` installiert werden)
+4. **Python 3.10+** (für Server, Tester und Memory-Validator)
 
 > [!NOTE]
-> You **do not** need the legacy DirectX 8 / 9 SDK installed. All necessary DirectX 8 interfaces and GUIDs are self-contained in `client/vendor/d3d8/d3d8_minimal.h`.
+> Das DirectX 8 / 9 SDK wird **nicht** benötigt. Alle Schnittstellen sind autark in `client/vendor/d3d8/d3d8_minimal.h` enthalten.
 
 ---
 
