@@ -215,6 +215,17 @@ namespace MadMultiplayer {
         return success;
     }
 
+    bool MemoryManager::ZeroVelocities() {
+        if (!EnsurePlayerEntity()) return false;
+        float zero = 0.0f;
+        SafeWriteFloat(m_playerEntity + 0x160, zero);
+        SafeWriteFloat(m_playerEntity + 0x164, zero);
+        SafeWriteFloat(m_playerEntity + 0x168, zero);
+        SafeWriteFloat(m_playerEntity + 0x1EC, zero);
+        SafeWriteFloat(m_playerEntity + 0x1F0, zero);
+        return true;
+    }
+
     bool MemoryManager::EnsurePlayerEntity() {
         if (!m_initialized) return false;
         uintptr_t entity = 0;

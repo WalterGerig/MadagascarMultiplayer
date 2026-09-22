@@ -11,6 +11,8 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 
 namespace MadMultiplayer {
 
+    static bool g_bRenderedThisFrame = false;
+
     void D3D8Hook::SaveD3D8State(IDirect3DDevice8* pDevice, D3D8StateBackup& b) {
         if (!pDevice) return;
 
@@ -551,10 +553,6 @@ namespace MadMultiplayer {
             m_lastDeltaTime = 0.0166f;
         }
 
-        if (frame == 1 || frame == 10 || frame == 100 || frame % 1000 == 0) {
-            MAD_LOG("[D3D8Hook] IDirect3DDevice8::Present Hook ACTIVE! Frame: %llu (dt: %.2f ms)", frame, m_lastDeltaTime * 1000.0f);
-        }
-
         // 2. Hotkeys flankengesteuert verarbeiten
         ProcessHotkeys();
 
@@ -614,7 +612,7 @@ namespace MadMultiplayer {
 
         // 6. STRICT FRAME GATE & COMPLETE D3D8 STATE PRESERVATION:
         // Rendern NUR wenn m_showOverlay aktiv ist - Exakt 1x pro Present auf den Backbuffer!
-        if (m_imguiInitialized.load() && m_showOverlay.load()) {
+        if (m_imguiInitialized.load() && m_showOverlay.load() && !g_bRenderedThisFrame) {
             D3D8StateBackup backup{};
             SaveD3D8State(pDevice, backup);
 
@@ -639,6 +637,7 @@ namespace MadMultiplayer {
             }
 
             RestoreD3D8State(pDevice, backup);
+            g_bRenderedThisFrame = true;
         }
 
         m_frameRendered.store(true);
@@ -880,6 +879,7 @@ namespace MadMultiplayer {
     }
 
     HRESULT STDMETHODCALLTYPE D3D8Hook::Hooked_Present(IDirect3DDevice8* pDevice, CONST RECT* pSourceRect, CONST RECT* pDestRect, HWND hDestWindowOverride, CONST RGNDATA* pDirtyRegion) {
+        g_bRenderedThisFrame = false; // Reset frame gate each visual frame
         auto& hook = D3D8Hook::Instance();
         hook.m_frameRendered.store(false);
         hook.OnPresent(pDevice);

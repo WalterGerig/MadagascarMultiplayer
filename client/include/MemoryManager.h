@@ -44,6 +44,7 @@ namespace MadMultiplayer {
 
         // Schreibt neue Koordinaten in die Spieler-Entity
         bool WriteLocalPosition(float x, float y, float z);
+        bool ZeroVelocities();
 
         // Health & Stats Manipulation
         bool ReadHealth(int32_t& outHealth);

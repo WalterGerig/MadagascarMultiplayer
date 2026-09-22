@@ -42,14 +42,21 @@ static bool ImGui_ImplDX8_CreateFontsTexture() {
             return false;
     }
 
-    D3DLOCKED_RECT rect;
-    if (bd->FontTexture->LockRect(0, &rect, nullptr, 0) < 0)
+    D3DLOCKED_RECT locked_rect;
+    if (SUCCEEDED(bd->FontTexture->LockRect(0, &locked_rect, NULL, 0)))
+    {
+        for (int y = 0; y < height; y++)
+        {
+            unsigned char* dest_row = (unsigned char*)locked_rect.pBits + (y * locked_rect.Pitch);
+            const unsigned char* src_row = pixels + (y * width * 4);
+            memcpy(dest_row, src_row, width * 4);
+        }
+        bd->FontTexture->UnlockRect(0);
+    }
+    else
+    {
         return false;
-
-    for (int y = 0; y < height; y++)
-        memcpy((char*)rect.pBits + rect.Pitch * y, pixels + (width * 4) * y, width * 4);
-
-    bd->FontTexture->UnlockRect(0);
+    }
     io.Fonts->SetTexID((ImTextureID)bd->FontTexture);
     return true;
 }
