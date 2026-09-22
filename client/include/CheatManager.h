@@ -37,7 +37,7 @@ namespace MadMultiplayer {
         void Update(float deltaTime);
         void RenderMenu();
 
-        // 1. Coordinate-Lock Flight / Noclip
+        // 1. Coordinate-Lock Flight / Noclip (100% Data-Driven, No NOPs)
         bool IsFlightEnabled() const { return m_flightEnabled; }
         void SetFlightEnabled(bool enabled);
         void ToggleFlight() { SetFlightEnabled(!m_flightEnabled); }
@@ -55,7 +55,8 @@ namespace MadMultiplayer {
         void LoadWaypoint(size_t slotIdx);
         void TeleportTo(float x, float y, float z);
 
-        // 3. Inventory & Coins Cheat
+        // 3. Inventory & Coins Cheat (Hook at 0x0043BE37)
+        void TriggerSet999Coins();
         uintptr_t GetEffectiveInventoryAddress() const;
         bool ReadInventoryCoins(uint32_t& outCoins);
         bool WriteInventoryCoins(uint32_t coins);
@@ -77,7 +78,6 @@ namespace MadMultiplayer {
         void  SetMovementSpeedMultiplier(float mult) { m_moveSpeedMultiplier = mult; }
 
         // 5. Classic Spawner Aktionen
-        void ApplyMaxCoins();
         void ApplyRefillMangoes();
         void ApplyMaxPawTokens();
         void ApplyFullHealth();
@@ -90,8 +90,8 @@ namespace MadMultiplayer {
 
         // Flight / Noclip (Coordinate-Lock & Freeze)
         bool    m_flightEnabled{ false };
-        float   m_flightSpeed{ 15.0f }; // Standard: 15.0f (1.0f - 100.0f)
-        int     m_flightHotkey{ VK_F4 }; // Hotkey: F4
+        float   m_flightSpeed{ 15.0f }; // Standard: 15.0f (Bereich: 1.0f - 100.0f)
+        int     m_flightHotkey{ VK_F4 }; // Hotkey F4
         bool    m_prevFlightHotkey{ false };
         bool    m_prevNKey{ false };
         Vector3 m_vFlyTarget{ 0.0f, 0.0f, 0.0f };
@@ -101,7 +101,7 @@ namespace MadMultiplayer {
         int   m_selectedPreset{ 0 };
         std::array<WaypointSlot, 3> m_waypoints{};
 
-        // Inventory & Coin Reverse Engineering Hook (0x0043BE3B)
+        // Inventory & Coin Reverse Engineering Hook (0x0043BE37)
         char      m_manualInventoryStr[32]{ "03391DA8" };
         uintptr_t m_manualInventoryAddr{ 0x03391DA8 };
         int       m_probeOffset{ 0x1C };
@@ -116,7 +116,6 @@ namespace MadMultiplayer {
         float m_moveSpeedMultiplier{ 1.0f };
 
         // Classic Collectibles
-        int m_customCoins{ 999 };
         int m_customMangoAmmo{ 99 };
         int m_customTokens{ 100 };
 

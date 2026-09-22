@@ -32,7 +32,6 @@ namespace MadMultiplayer {
         static constexpr uintptr_t OFFSET_PAUSED         = 0x0022A520;
         static constexpr uintptr_t OFFSET_CAM_PITCH      = 0x002181FC;
         static constexpr uintptr_t OFFSET_CAM_YAW        = 0x00218220;
-        static constexpr uintptr_t OFFSET_PHYSICS_OPCODE = 0x00028E9C; // fstp dword ptr [ebp+1F8h] (6 Bytes)
 
         static MemoryManager& Instance();
 
@@ -59,10 +58,7 @@ namespace MadMultiplayer {
         // Generische SEH-geschützte Speicherzugriffe
         bool SafeReadBytes(uintptr_t address, void* buffer, size_t size);
         bool SafeWriteBytes(uintptr_t address, const void* buffer, size_t size);
-
-        // NOP-Patch für Physik-Overwrite (0x00428E9C) aktivieren / deaktivieren
-        bool SetPhysicsPatch(bool enable);
-        bool IsPhysicsPatched() const { return m_physicsPatched; }
+        static bool IsValidUserPointer(uintptr_t ptr);
 
         uintptr_t GetModuleBase() const { return m_moduleBase; }
         uintptr_t GetPlayerEntity() const { return m_playerEntity; }
@@ -75,12 +71,9 @@ namespace MadMultiplayer {
         uintptr_t m_moduleBase{ 0 };
         uintptr_t m_playerEntity{ 0 };
         bool      m_initialized{ false };
-        bool      m_physicsPatched{ false };
-        uint8_t   m_origPhysicsBytes[6]{ 0xD9, 0x9D, 0xF8, 0x01, 0x00, 0x00 };
 
         // Interne SEH-sichere Pointer-Auflösung
         bool ResolvePlayerEntityInternal(uintptr_t& outEntity);
-        static bool IsValidUserPointer(uintptr_t ptr);
     };
 
 } // namespace MadMultiplayer

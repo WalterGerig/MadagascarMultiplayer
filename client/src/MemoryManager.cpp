@@ -100,30 +100,12 @@ namespace MadMultiplayer {
 
         printf("[MadMultiplayer::Memory] Initialisiert. Modul-Basisadresse: 0x%08X\n", (unsigned int)m_moduleBase);
 
-        // Original-Bytes der Physik-Instruktion sichern
-        uintptr_t physAddr = m_moduleBase + OFFSET_PHYSICS_OPCODE;
-        __try {
-            std::memcpy(m_origPhysicsBytes, reinterpret_cast<const void*>(physAddr), sizeof(m_origPhysicsBytes));
-            printf("[MadMultiplayer::Memory] Physik-Instruktion @ 0x%08X gesichert (%02X %02X %02X %02X %02X %02X)\n",
-                   (unsigned int)physAddr,
-                   m_origPhysicsBytes[0], m_origPhysicsBytes[1], m_origPhysicsBytes[2],
-                   m_origPhysicsBytes[3], m_origPhysicsBytes[4], m_origPhysicsBytes[5]);
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) {
-            printf("[MadMultiplayer::Memory] WARNUNG: Konnte Physik-Instruktion nicht lesen (SEH Exception)!\n");
-        }
-
         m_initialized = true;
         return true;
     }
 
     void MemoryManager::Shutdown() {
         if (!m_initialized) return;
-
-        // Physik-Patch zurücksetzen falls aktiv
-        if (m_physicsPatched) {
-            SetPhysicsPatch(false);
-        }
 
         m_initialized = false;
         m_playerEntity = 0;
@@ -287,33 +269,6 @@ namespace MadMultiplayer {
     bool MemoryManager::SafeWriteBytes(uintptr_t address, const void* buffer, size_t size) {
         if (!address || !buffer || !IsValidUserPointer(address)) return false;
         return SafeWriteBytesRaw(address, buffer, size);
-    }
-
-    bool MemoryManager::SetPhysicsPatch(bool enable) {
-        if (!m_initialized) return false;
-
-        uintptr_t physAddr = m_moduleBase + OFFSET_PHYSICS_OPCODE;
-        DWORD oldProtect = 0;
-
-        if (!VirtualProtect(reinterpret_cast<void*>(physAddr), sizeof(m_origPhysicsBytes), PAGE_EXECUTE_READWRITE, &oldProtect)) {
-            printf("[MadMultiplayer::Memory] VirtualProtect fehlgeschlagen! Error: %lu\n", GetLastError());
-            return false;
-        }
-
-        if (enable) {
-            uint8_t nops[6] = { 0x90, 0x90, 0x90, 0x90, 0x90, 0x90 };
-            std::memcpy(reinterpret_cast<void*>(physAddr), nops, sizeof(nops));
-            m_physicsPatched = true;
-            printf("[MadMultiplayer::Memory] Physik-Overwrite @ 0x%08X mit NOPs aktiviert.\n", (unsigned int)physAddr);
-        } else {
-            std::memcpy(reinterpret_cast<void*>(physAddr), m_origPhysicsBytes, sizeof(m_origPhysicsBytes));
-            m_physicsPatched = false;
-            printf("[MadMultiplayer::Memory] Physik-Overwrite @ 0x%08X wiederhergestellt.\n", (unsigned int)physAddr);
-        }
-
-        VirtualProtect(reinterpret_cast<void*>(physAddr), sizeof(m_origPhysicsBytes), oldProtect, &oldProtect);
-        FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<void*>(physAddr), sizeof(m_origPhysicsBytes));
-        return true;
     }
 
 } // namespace MadMultiplayer

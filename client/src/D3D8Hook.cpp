@@ -783,18 +783,42 @@ namespace MadMultiplayer {
         ImGui::End();
     }
 
-    // SICHERES MOUSE-UNLOCK & WNDPROC HOOKING
+    // SICHERES MOUSE-UNLOCK & WNDPROC HOOKING (BLOCK GAME INPUT ON UI)
     LRESULT D3D8Hook::HandleGameWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
-        // 1. WM_SETCURSOR: Nur im UI-Bedienmodus Cursor freigeben; im Gameplay-Modus fesselt RenderWare ihn
+        // 1. WM_SETCURSOR: Im UI-Bedienmodus oder bei geoeffnetem Overlay Cursor anzeigen & freigeben
         if (uMsg == WM_SETCURSOR) {
-            if (m_mouseInputMode.load()) {
+            if (m_showOverlay.load() || m_mouseInputMode.load()) {
                 UnlockMouseCursor();
                 return TRUE;
             }
         }
 
-        // 2. UI-Maus-Offset im Pausenmenue beheben (Widescreen Mouse Scaling)
-        // Transformiert Screen-Koordinaten auf das urspruengliche 800x600-Format
+        // 2. ImGui Input-Routing & Block Game Input (Verhindert Marty-Kicks bei UI-Klicks & Collision Crashes)
+        if (m_imguiInitialized.load()) {
+            ImGui_ImplWin32_WndProcHandler(hWnd, uMsg, wParam, lParam);
+
+            ImGuiIO& io = ImGui::GetIO();
+            bool bBlockGameInput = m_showOverlay.load() || io.WantCaptureMouse || io.WantCaptureKeyboard;
+
+            if (bBlockGameInput) {
+                // Maus-Events: Wenn Overlay offen oder ImGui die Maus beansprucht -> NIEMALS ans Spiel durchlassen!
+                if ((uMsg >= WM_MOUSEFIRST && uMsg <= WM_MOUSELAST) || uMsg == WM_MOUSEWHEEL) {
+                    return 0;
+                }
+
+                // Tastatur-Events: Wenn Text getippt wird oder Overlay offen ist -> Schlucken ausser F3 (Toggle)
+                if ((uMsg >= WM_KEYFIRST && uMsg <= WM_KEYLAST) || uMsg == WM_CHAR) {
+                    const auto& cfg = Config::Instance().Get();
+                    bool isToggleKey = (wParam == cfg.keyToggleOverlay) || (wParam == VK_F3) || (wParam == VK_INSERT) ||
+                                       (wParam == cfg.keyToggleMouseMode) || (wParam == VK_F2);
+                    if (!isToggleKey) {
+                        return 0;
+                    }
+                }
+            }
+        }
+
+        // 3. UI-Maus-Offset im Pausenmenue beheben (Widescreen Mouse Scaling)
         if (m_isBorderless && !m_mouseInputMode.load() && m_screenWidth > 0 && m_screenHeight > 0) {
             if (uMsg == WM_MOUSEMOVE || uMsg == WM_LBUTTONDOWN || uMsg == WM_LBUTTONUP ||
                 uMsg == WM_RBUTTONDOWN || uMsg == WM_RBUTTONUP || uMsg == WM_MBUTTONDOWN || uMsg == WM_MBUTTONUP) {
@@ -806,14 +830,14 @@ namespace MadMultiplayer {
             }
         }
 
-        // 3. WM_MOUSEMOVE im UI-Modus
+        // 4. WM_MOUSEMOVE im UI-Modus
         if (uMsg == WM_MOUSEMOVE || uMsg == WM_NCMOUSEMOVE) {
-            if (m_mouseInputMode.load() || GetForegroundWindow() != m_hGameWindow) {
+            if (m_mouseInputMode.load() || m_showOverlay.load() || GetForegroundWindow() != m_hGameWindow) {
                 UnlockMouseCursor();
             }
         }
 
-        // 4. Alt-Tab / Focus Loss
+        // 5. Alt-Tab / Focus Loss
         if (uMsg == WM_KILLFOCUS || uMsg == WM_ACTIVATEAPP) {
             if (wParam == FALSE) {
                 UnlockMouseCursor();
@@ -822,13 +846,12 @@ namespace MadMultiplayer {
                     io.ClearEventsQueue();
                     io.AddFocusEvent(false);
                 }
-                MAD_LOG("[WndProc] WM_KILLFOCUS / WM_ACTIVATEAPP -> Maus freigegeben.");
             } else {
                 UpdateMouseCapture();
             }
         }
 
-        // 5. Fenster-Drift Fix beim Draggen
+        // 6. Fenster-Drift Fix beim Draggen
         if (uMsg == WM_SYSCOMMAND) {
             DWORD cmd = (wParam & 0xFFF0);
             if (cmd == SC_MOVE || cmd == SC_SIZE) {
@@ -837,27 +860,6 @@ namespace MadMultiplayer {
         }
         else if (uMsg == WM_ENTERSIZEMOVE) {
             UnlockMouseCursor();
-        }
-
-        // 6. ImGui Message Handler & Input Dispatch
-        if (m_imguiInitialized.load()) {
-            ImGui_ImplWin32_WndProcHandler(hWnd, uMsg, wParam, lParam);
-
-            // Wenn UI-Bedienmodus aktiv ist: Alle Maus-Events abfangen,
-            // damit Klicks im Menue nicht ins Gameplay durchdringen!
-            if (m_mouseInputMode.load()) {
-                if (uMsg >= WM_MOUSEFIRST && uMsg <= WM_MOUSELAST) {
-                    return 1;
-                }
-            }
-
-            // Keyboard-Events fuer ImGui-Eingabefelder abfangen
-            if (m_showOverlay.load()) {
-                ImGuiIO& io = ImGui::GetIO();
-                if (io.WantCaptureKeyboard && (uMsg >= WM_KEYFIRST && uMsg <= WM_KEYLAST)) {
-                    return 1;
-                }
-            }
         }
 
         return CallWindowProcA(m_pOriginalGameWndProc, hWnd, uMsg, wParam, lParam);

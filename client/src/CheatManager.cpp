@@ -11,24 +11,49 @@
 namespace MadMultiplayer {
 
     // -------------------------------------------------------------------------
-    // REVERSE ENGINEERING: COIN OPCODE MID-FUNCTION HOOK
-    // Game.exe + 0x0003BE3B:
-    //   mov [esi+1Ch], eax  (89 46 1C)
-    //   pop esi             (5E)
-    //   ret 8               (C2 08 00)
-    // Total: 7 Bytes
+    // REVERSE ENGINEERING: COIN UPDATE HOOK AT 0x0043BE37 (7 BYTES)
+    //
+    // 0043BE30 - C7 46 18 00000000 - mov [esi+18], 00000000  (7 bytes)
+    // 0043BE37 - 8B 44 24 08       - mov eax, [esp+08]       (4 bytes: new coin param)
+    // 0043BE3B - 89 46 1C          - mov [esi+1C], eax       (3 bytes: store coins)
+    // 0043BE3E - 5E                - pop esi                 (1 byte)
+    // 0043BE3F - C2 0800           - ret 0008                (3 bytes)
+    //
+    // Hook span: 0x0043BE37 .. 0x0043BE3E (7 bytes: 8B 44 24 08 89 46 1C)
+    // Replaced with: 0xE9 <rel32> 0x90 0x90 (5-byte JMP + 2 NOPs)
+    // Jump-back: 0x0043BE3E (pop esi; ret 8)
     // -------------------------------------------------------------------------
     static uintptr_t g_pInventoryBase = 0;
+    static bool      g_bCoinCheatTriggered = false;
+    static uintptr_t g_coinJumpBackAddr = 0;
     static bool      g_coinHookInstalled = false;
-    static uint8_t   g_origCoinBytes[7] = { 0x89, 0x46, 0x1C, 0x5E, 0xC2, 0x08, 0x00 };
+    static uint8_t   g_origCoinBytes[7] = { 0x8B, 0x44, 0x24, 0x08, 0x89, 0x46, 0x1C };
 
     __declspec(naked) static void Hook_CoinWrite() {
         __asm {
+            // ESI enthaelt den Zeiger auf die Spieler-Inventarstruktur
             mov g_pInventoryBase, esi
-            // Originale Instruktionen ausfuehren:
+
+            // Wurde der Set 999 Coins Cheat getriggert?
+            cmp g_bCoinCheatTriggered, 1
+            jne normal_coin_write
+
+            // Cheat aktiv: Wert 999 in Argument und Register schreiben
+            mov g_bCoinCheatTriggered, 0
+            mov dword ptr [esp + 8], 999
+            mov eax, 999
+            jmp perform_write
+
+        normal_coin_write:
+            // Originale Instruktion: mov eax, [esp+08]
+            mov eax, [esp + 8]
+
+        perform_write:
+            // Originale Instruktion: mov [esi+1C], eax
             mov [esi + 0x1C], eax
-            pop esi
-            ret 8
+
+            // Sauber zurueckspringen zu 0x0043BE3E (wo pop esi und ret 0008 liegen)
+            jmp dword ptr [g_coinJumpBackAddr]
         }
     }
 
@@ -70,11 +95,11 @@ namespace MadMultiplayer {
             m_waypoints[i].timestamp[0] = '\0';
         }
 
-        // Automatischen Mid-Function Hook fuer Muenzen / Inventar installieren
+        // 7-Byte Mid-Function Hook bei 0x0043BE37 installieren
         InstallCoinHook();
 
         m_initialized = true;
-        MAD_LOG("[CheatManager] Cheat Engine & Sandbox erfolgreich initialisiert (Flight: F4, Speed: %.1f).", m_flightSpeed);
+        MAD_LOG("[CheatManager] Cheat Engine initialisiert (Flight Hotkey: F4, Speed: %.1f).", m_flightSpeed);
     }
 
     void CheatManager::Shutdown() {
@@ -91,10 +116,13 @@ namespace MadMultiplayer {
         uintptr_t modBase = MemoryManager::Instance().GetModuleBase();
         if (!modBase) return;
 
-        uintptr_t targetAddr = modBase + 0x0003BE3B;
-        uint8_t curBytes[3] = {};
-        if (MemoryManager::Instance().SafeReadBytes(targetAddr, curBytes, 3)) {
-            if (curBytes[0] == 0x89 && curBytes[1] == 0x46 && curBytes[2] == 0x1C) {
+        uintptr_t targetAddr = modBase + 0x0003BE37;
+        g_coinJumpBackAddr = modBase + 0x0003BE3E;
+
+        uint8_t curBytes[7] = {};
+        if (MemoryManager::Instance().SafeReadBytes(targetAddr, curBytes, 7)) {
+            // Pruefe ob die Bytes mit 8B 44 24 08 uebereinstimmen
+            if (curBytes[0] == 0x8B && curBytes[1] == 0x44 && curBytes[2] == 0x24 && curBytes[3] == 0x08) {
                 DWORD oldProtect = 0;
                 if (VirtualProtect(reinterpret_cast<void*>(targetAddr), 7, PAGE_EXECUTE_READWRITE, &oldProtect)) {
                     uint8_t patch[7] = { 0xE9, 0x00, 0x00, 0x00, 0x00, 0x90, 0x90 };
@@ -104,11 +132,12 @@ namespace MadMultiplayer {
                     VirtualProtect(reinterpret_cast<void*>(targetAddr), 7, oldProtect, &oldProtect);
                     FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<void*>(targetAddr), 7);
                     g_coinHookInstalled = true;
-                    MAD_LOG("[CheatManager] Coin Mid-Function Hook erfolgreich installiert @ 0x%08X (E9 relative jump)", (unsigned int)targetAddr);
+                    MAD_LOG("[CheatManager] 7-Byte Coin Hook erfolgreich installiert @ 0x%08X -> JumpBack: 0x%08X",
+                            (unsigned int)targetAddr, (unsigned int)g_coinJumpBackAddr);
                 }
             } else {
-                MAD_LOG("[CheatManager] Coin Opcode @ 0x%08X stimmte nicht ueberein (Gefunden: %02X %02X %02X)",
-                        (unsigned int)targetAddr, curBytes[0], curBytes[1], curBytes[2]);
+                MAD_LOG("[CheatManager] Coin Opcode @ 0x%08X stimmte nicht ueberein (%02X %02X %02X %02X)",
+                        (unsigned int)targetAddr, curBytes[0], curBytes[1], curBytes[2], curBytes[3]);
             }
         }
     }
@@ -119,15 +148,25 @@ namespace MadMultiplayer {
         uintptr_t modBase = MemoryManager::Instance().GetModuleBase();
         if (!modBase) return;
 
-        uintptr_t targetAddr = modBase + 0x0003BE3B;
+        uintptr_t targetAddr = modBase + 0x0003BE37;
         DWORD oldProtect = 0;
         if (VirtualProtect(reinterpret_cast<void*>(targetAddr), 7, PAGE_EXECUTE_READWRITE, &oldProtect)) {
             std::memcpy(reinterpret_cast<void*>(targetAddr), g_origCoinBytes, 7);
             VirtualProtect(reinterpret_cast<void*>(targetAddr), 7, oldProtect, &oldProtect);
             FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<void*>(targetAddr), 7);
             g_coinHookInstalled = false;
-            MAD_LOG("[CheatManager] Coin Mid-Function Hook deinstalliert @ 0x%08X", (unsigned int)targetAddr);
+            MAD_LOG("[CheatManager] Coin Hook deinstalliert @ 0x%08X", (unsigned int)targetAddr);
         }
+    }
+
+    void CheatManager::TriggerSet999Coins() {
+        g_bCoinCheatTriggered = true;
+        uintptr_t invBase = GetEffectiveInventoryAddress();
+        if (invBase && MemoryManager::IsValidUserPointer(invBase)) {
+            WriteInventoryCoins(999);
+        }
+        MemoryManager::Instance().WriteCoins(999);
+        MAD_LOG("[CheatManager] Set 999 Coins getriggert.");
     }
 
     uintptr_t CheatManager::GetEffectiveInventoryAddress() const {
@@ -136,7 +175,7 @@ namespace MadMultiplayer {
         }
         if (m_manualInventoryStr[0] != '\0') {
             uintptr_t parsed = static_cast<uintptr_t>(strtoul(m_manualInventoryStr, nullptr, 16));
-            if (parsed >= 0x00010000 && parsed <= 0x7FFEFFFF) {
+            if (MemoryManager::IsValidUserPointer(parsed)) {
                 return parsed;
             }
         }
@@ -186,7 +225,7 @@ namespace MadMultiplayer {
     }
 
     // -------------------------------------------------------------------------
-    // 2. COORDINATE-LOCK FLIGHT & FREEZE
+    // 2. COORDINATE-LOCK FLIGHT & FREEZING (100% DATENGESTUETZT, KEINE NOPS!)
     // -------------------------------------------------------------------------
     void CheatManager::SetFlightEnabled(bool enabled) {
         m_flightEnabled = enabled;
@@ -198,14 +237,12 @@ namespace MadMultiplayer {
                 m_vFlyTarget.y = cur.y;
                 m_vFlyTarget.z = cur.z;
             }
-            mem.SetPhysicsPatch(true);
             mem.ZeroVelocities();
-            MAD_LOG("[CheatManager] Coordinate-Lock Flight AKTIVIERT (Schwerkraft-Patch aktiv, Pos locked @ %.2f, %.2f, %.2f).",
+            MAD_LOG("[CheatManager] Coordinate-Lock Flight AKTIVIERT (Pos locked @ %.2f, %.2f, %.2f).",
                     m_vFlyTarget.x, m_vFlyTarget.y, m_vFlyTarget.z);
         } else {
-            mem.SetPhysicsPatch(false);
             mem.ZeroVelocities();
-            MAD_LOG("[CheatManager] Coordinate-Lock Flight DEAKTIVIERT (Velocities genullt).");
+            MAD_LOG("[CheatManager] Coordinate-Lock Flight DEAKTIVIERT.");
         }
     }
 
@@ -264,15 +301,21 @@ namespace MadMultiplayer {
     }
 
     // -------------------------------------------------------------------------
-    // 3. TELEPORTATION & WAYPOINTS
+    // 3. TELEPORTATION & WAYPOINTS (SAFE HEIGHT OFFSET + NULL CHECKS)
     // -------------------------------------------------------------------------
     void CheatManager::TeleportTo(float x, float y, float z) {
-        float safeY = y + 1.0f; // +1.0f Hoehen-Offset gegen Einsinken in Polygone
+        auto& mem = MemoryManager::Instance();
+        PlayerTransform pt{};
+        if (!mem.ReadLocalPlayer(pt) || !pt.isValid) {
+            MAD_LOG("[CheatManager] Teleport abgebrochen: Spieler-Entity ungueltig!");
+            return;
+        }
+
+        float safeY = y + 1.0f; // +1.0f Hoehen-Offset gegen Einsinken in Boden-Kollision
         m_vFlyTarget.x = x;
         m_vFlyTarget.y = safeY;
         m_vFlyTarget.z = z;
 
-        auto& mem = MemoryManager::Instance();
         if (mem.WriteLocalPosition(x, safeY, z)) {
             mem.ZeroVelocities();
             m_targetPos[0] = x;
@@ -318,12 +361,6 @@ namespace MadMultiplayer {
     // -------------------------------------------------------------------------
     // 4. STATS & MODIFIERS
     // -------------------------------------------------------------------------
-    void CheatManager::ApplyMaxCoins() {
-        WriteInventoryCoins(999);
-        MemoryManager::Instance().WriteCoins(m_customCoins);
-        MAD_LOG("[CheatManager] Muenzen auf 999 gesetzt.");
-    }
-
     void CheatManager::ApplyRefillMangoes() {
         if (MemoryManager::Instance().WriteMangoAmmo(m_customMangoAmmo)) {
             MAD_LOG("[CheatManager] Mangos/Munition aufgefuellt auf %d", m_customMangoAmmo);
@@ -452,7 +489,7 @@ namespace MadMultiplayer {
             }
 
             ImGui::SliderFloat("Flight Speed", &m_flightSpeed, 1.0f, 100.0f, "%.1f");
-            ImGui::TextDisabled("Controls:\n  • W / S: Forward / Backward along Yaw\n  • A / D: Strafe Left / Right\n  • Space: Ascend\n  • Left Shift / C: Descend\n  • In-Air Freezing: When no vertical key is pressed, altitude is frozen!");
+            ImGui::TextDisabled("Controls:\n  • W / S: Forward / Backward along Yaw\n  • A / D: Strafe Left / Right\n  • Space: Ascend (+Y)\n  • Left Shift / C: Descend (-Y)\n  • In-Air Freezing: When no vertical key is pressed, altitude is frozen!");
         }
 
         ImGui::Spacing();
@@ -517,17 +554,17 @@ namespace MadMultiplayer {
         ImGui::Spacing();
 
         // ---------------------------------------------------------------------
-        // SECTION 3: INVENTORY & COINS CHEAT SYSTEM
-        // ---------------------------------------------------------------------
-        if (ImGui::CollapsingHeader("🪙  Inventory & Coins Cheat System (Reversed Opcode)", ImGuiTreeNodeFlags_DefaultOpen)) {
+        // SECTION 3: INVENTORY & COINS CHEAT SYSTEM (HOOK @ 0x0043BE37)
+        // -------------------------------------------------------------------------
+        if (ImGui::CollapsingHeader("🪙  Inventory & Coins Cheat System", ImGuiTreeNodeFlags_DefaultOpen)) {
             uintptr_t effectiveAddr = GetEffectiveInventoryAddress();
 
             ImGui::Text("Hook Status: ");
             ImGui::SameLine();
             if (g_pInventoryBase != 0) {
-                ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.4f, 1.0f), "Captured via Mid-Function Hook (0x%08X)", (unsigned int)g_pInventoryBase);
+                ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.4f, 1.0f), "Captured via Hook @ 0x0043BE37 (Base: 0x%08X)", (unsigned int)g_pInventoryBase);
             } else {
-                ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "Waiting for Capture (Collect 1 coin) or using Manual Address");
+                ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "Waiting for capture (Collect 1 coin in-game or enter manual address)");
             }
 
             ImGui::Text("Effective Inventory Base: 0x%08X", (unsigned int)effectiveAddr);
@@ -544,16 +581,15 @@ namespace MadMultiplayer {
             if (coinsReadOk) {
                 ImGui::TextColored(ImVec4(1.0f, 0.9f, 0.3f, 1.0f), "Current Coins (+0x1C): %u", currentCoins);
             } else {
-                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Current Coins (+0x1C): [Cannot Read Base]");
+                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Current Coins (+0x1C): [Waiting for Base Pointer]");
             }
 
-            if (ImGui::Button("+100 Coins", ImVec2(140, 26))) {
-                AddInventoryCoins(100);
+            if (ImGui::Button("Set 999 Coins", ImVec2(160, 26))) {
+                TriggerSet999Coins();
             }
             ImGui::SameLine();
-            if (ImGui::Button("Max Coins (999)", ImVec2(160, 26))) {
-                WriteInventoryCoins(999);
-                MemoryManager::Instance().WriteCoins(999);
+            if (ImGui::Button("+100 Coins", ImVec2(140, 26))) {
+                AddInventoryCoins(100);
             }
 
             ImGui::Spacing();
