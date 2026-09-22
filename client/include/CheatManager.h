@@ -37,32 +37,35 @@ namespace MadMultiplayer {
         void Update(float deltaTime);
         void RenderMenu();
 
-        // 1. Coordinate-Lock Flight / Noclip (100% Data-Driven, No NOPs)
+        // 1. Coordinate-Lock Flight / Noclip (100% Data-Driven, No NOPs, No Crash)
         bool IsFlightEnabled() const { return m_flightEnabled; }
         void SetFlightEnabled(bool enabled);
         void ToggleFlight() { SetFlightEnabled(!m_flightEnabled); }
 
         float GetFlightSpeed() const { return m_flightSpeed; }
-        void  SetFlightSpeed(float speed) { m_flightSpeed = speed; }
+        void  SetFlightSpeed(float speed) { m_flightSpeed = speed; m_fFlightSpeed = speed; }
 
         int  GetFlightHotkey() const { return m_flightHotkey; }
         void SetFlightHotkey(int vkKey) { m_flightHotkey = vkKey; }
 
-        const Vector3& GetFlyTarget() const { return m_vFlyTarget; }
+        const Vector3& GetFlyPos() const { return m_vFlyPos; }
+        const Vector3& GetFlyTarget() const { return m_vFlyPos; }
 
         // 2. Teleportation & Waypoints
         void SaveWaypoint(size_t slotIdx);
         void LoadWaypoint(size_t slotIdx);
         void TeleportTo(float x, float y, float z);
 
-        // 3. Inventory & Coins Cheat (Hook at 0x0043BE37)
+        // 3. Direct Memory Coin Freeze (0x03391DA8 + 0x1C)
         void TriggerSet999Coins();
-        uintptr_t GetEffectiveInventoryAddress() const;
-        bool ReadInventoryCoins(uint32_t& outCoins);
-        bool WriteInventoryCoins(uint32_t coins);
-        bool AddInventoryCoins(int32_t delta);
-        bool ReadSecondaryToken(uint32_t& outToken);
-        bool WriteSecondaryToken(uint32_t token);
+        uintptr_t GetCoinBaseAddress() const { return m_dwCoinBaseAddress; }
+        void      SetCoinBaseAddress(uintptr_t addr) { m_dwCoinBaseAddress = addr; }
+        uintptr_t GetCoinOffset() const { return m_dwCoinOffset; }
+        void      SetCoinOffset(uintptr_t offset) { m_dwCoinOffset = offset; }
+        bool      IsCoinFreezeEnabled() const { return m_bFreezeCoins; }
+        void      SetCoinFreezeEnabled(bool enabled) { m_bFreezeCoins = enabled; }
+        int       GetTargetCoins() const { return m_nTargetCoins; }
+        void      SetTargetCoins(int target) { m_nTargetCoins = target; }
 
         // 4. God Mode & Modifiers
         bool IsGodModeEnabled() const { return m_godModeEnabled; }
@@ -88,24 +91,25 @@ namespace MadMultiplayer {
 
         bool m_initialized{ false };
 
-        // Flight / Noclip (Coordinate-Lock & Freeze)
+        // Flight / Noclip (Coordinate-Lock & Altitude Freeze)
         bool    m_flightEnabled{ false };
-        float   m_flightSpeed{ 15.0f }; // Standard: 15.0f (Bereich: 1.0f - 100.0f)
+        float   m_flightSpeed{ 15.0f }; // Standard: 15.0f
+        float   m_fFlightSpeed{ 15.0f };
         int     m_flightHotkey{ VK_F4 }; // Hotkey F4
         bool    m_prevFlightHotkey{ false };
         bool    m_prevNKey{ false };
-        Vector3 m_vFlyTarget{ 0.0f, 0.0f, 0.0f };
+        Vector3 m_vFlyPos{ 0.0f, 0.0f, 0.0f };
 
         // Teleportation & Waypoints
         float m_targetPos[3]{ 0.0f, 10.0f, 0.0f };
         int   m_selectedPreset{ 0 };
         std::array<WaypointSlot, 3> m_waypoints{};
 
-        // Inventory & Coin Reverse Engineering Hook (0x0043BE37)
-        char      m_manualInventoryStr[32]{ "03391DA8" };
-        uintptr_t m_manualInventoryAddr{ 0x03391DA8 };
-        int       m_probeOffset{ 0x1C };
-        int       m_probeValue{ 0 };
+        // Direct Memory Coin Freeze
+        uintptr_t m_dwCoinBaseAddress{ 0x03391DA8 }; // Default from Cheat Engine
+        uintptr_t m_dwCoinOffset{ 0x1C };
+        bool      m_bFreezeCoins{ false };
+        int       m_nTargetCoins{ 999 };
 
         // God Mode & Player Modifiers
         bool  m_godModeEnabled{ false };
@@ -121,8 +125,6 @@ namespace MadMultiplayer {
 
         void ProcessFlightMovement(float deltaTime, const PlayerTransform& cur);
         void ProcessPlayerModifiers(float deltaTime, const PlayerTransform& cur);
-        void InstallCoinHook();
-        void UninstallCoinHook();
     };
 
 } // namespace MadMultiplayer

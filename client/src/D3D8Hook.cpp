@@ -123,32 +123,66 @@ namespace MadMultiplayer {
         ::SetCursor(::LoadCursorA(nullptr, MAKEINTRESOURCEA(32512))); // IDC_ARROW
     }
 
+    // Globale Zustandsvariable fuer strikte modale Eingabe-Isolation (F2)
+    bool g_bUIModeActive = false;
+
+    void ToggleUIMode() {
+        D3D8Hook::Instance().ToggleUIMode();
+    }
+
+    void SetUIMode(bool active) {
+        D3D8Hook::Instance().SetUIMode(active);
+    }
+
+    bool IsUIModeActive() {
+        return g_bUIModeActive;
+    }
+
     // F3: Overlay-Sichtbarkeit ein-/ausblenden
     void D3D8Hook::ToggleOverlayVisibility() {
+        static DWORD s_lastF3Tick = 0;
+        DWORD now = GetTickCount();
+        if (now - s_lastF3Tick < 150) return;
+        s_lastF3Tick = now;
+
         bool visible = !m_showOverlay.load();
         m_showOverlay.store(visible);
         MAD_LOG("[D3D8Hook] Overlay Sichtbarkeit geaendert -> %s (Taste F3)", visible ? "SICHTBAR" : "VERSTECKT");
     }
 
-    // F2: Maus-Modus umschalten (UI-Klicks vs. Gameplay-Kamerasteuerung)
+    // F2: UI-Modus umschalten (UI-Klicks vs. Gameplay-Kamerasteuerung)
+    void D3D8Hook::ToggleUIMode() {
+        static DWORD s_lastF2Tick = 0;
+        DWORD now = GetTickCount();
+        if (now - s_lastF2Tick < 150) return;
+        s_lastF2Tick = now;
+
+        SetUIMode(!g_bUIModeActive);
+    }
+
     void D3D8Hook::ToggleMouseMode() {
-        SetMouseMode(!m_mouseInputMode.load());
+        ToggleUIMode();
+    }
+
+    void D3D8Hook::SetUIMode(bool uiMouseMode) {
+        g_bUIModeActive = uiMouseMode;
+        m_mouseInputMode.store(uiMouseMode);
+        MAD_LOG("[D3D8Hook] Eingabe-Modus geaendert -> %s (Taste F2)", 
+                uiMouseMode ? "UI-BEDIENUNG (Cursor frei, Game-Input blockiert)" : "GAMEPLAY-MODUS (Cursor im Spiel gefangen)");
+        UpdateMouseCapture();
     }
 
     void D3D8Hook::SetMouseMode(bool uiMouseMode) {
-        m_mouseInputMode.store(uiMouseMode);
-        MAD_LOG("[D3D8Hook] Maus-Modus geaendert -> %s (Taste F2)", 
-                uiMouseMode ? "UI-BEDIENUNG (Cursor frei)" : "GAMEPLAY-MODUS (Cursor im Spiel gefangen)");
-        UpdateMouseCapture();
+        SetUIMode(uiMouseMode);
     }
 
     void D3D8Hook::UpdateMouseCapture() {
         HWND hWnd = m_hGameWindow;
         if (!hWnd) hWnd = FindWindowA("RWSConsoleD3D8", nullptr);
 
-        if (m_mouseInputMode.load()) {
+        if (g_bUIModeActive) {
             // Zustand A: UI-Bedienmodus (F2 aktiv)
-            // Cursor vollstaendig freigeben fuer Menue und Desktop
+            // Cursor vollstaendig freigeben und sichtbar schalten
             ::ClipCursor(nullptr);
             ::SetCursor(::LoadCursorA(nullptr, MAKEINTRESOURCEA(32512))); // IDC_ARROW
             while (::ShowCursor(TRUE) < 0);
@@ -158,8 +192,7 @@ namespace MadMultiplayer {
             }
         } else {
             // Zustand B: Gameplay-Modus (F2 inaktiv)
-            // Cursor ausblenden und im Client-Bereich des Spielfensters fesseln,
-            // damit die Maus bei Kameradrehungen NICHT mehr herausgleitet!
+            // Cursor ausblenden und im Client-Bereich des Spielfensters fesseln
             if (m_imguiInitialized.load()) {
                 ImGui::GetIO().MouseDrawCursor = false;
             }
@@ -658,27 +691,32 @@ namespace MadMultiplayer {
     }
 
     void D3D8Hook::RenderOverlayUI() {
+        ImGuiWindowFlags windowFlags = ImGuiWindowFlags_None;
+        if (!g_bUIModeActive) {
+            windowFlags |= ImGuiWindowFlags_NoInputs;
+        }
+
         ImGui::SetNextWindowSize(ImVec2(540, 460), ImGuiCond_FirstUseEver);
         bool open = m_showOverlay.load();
-        if (ImGui::Begin("Madagascar Multiplayer Client ###MadMultiplayerUI", &open)) {
+        if (ImGui::Begin("Madagascar Multiplayer Client ###MadMultiplayerUI", &open, windowFlags)) {
             m_showOverlay.store(open);
             ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "MADAGASCAR (2005) - MULTIPLAYER OVERLAY");
-            ImGui::TextDisabled("Hotkeys: [F2] Maus freigeben/fangen | [F3] Menue ein/aus | [Taste 9] 16:9 Widescreen");
+            ImGui::TextDisabled("Hotkeys: [F2] UI-Modus an/aus | [F3] Menue ein/aus | [Taste 9] 16:9 Widescreen");
             ImGui::Separator();
 
             if (ImGui::BeginTabBar("MainTabBar")) {
                 if (ImGui::BeginTabItem("Multiplayer & State")) {
                     if (ImGui::CollapsingHeader("Steuerung & Maus-Fokus", ImGuiTreeNodeFlags_DefaultOpen)) {
-                        ImGui::Text("Maus-Status: ");
+                        ImGui::Text("Maus- / UI-Status: ");
                         ImGui::SameLine();
-                        if (m_mouseInputMode.load()) {
-                            ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f), "[UI-BEDIENUNG] (Cursor frei)");
+                        if (g_bUIModeActive) {
+                            ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f), "[UI-BEDIENUNG] (Cursor frei, Game-Input isoliert)");
                         } else {
                             ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "[GAMEPLAY-MODUS] (Im Spiel gefangen - Taste F2)");
                         }
 
-                        if (ImGui::Button(m_mouseInputMode.load() ? "Maus im Spiel fangen [F2]" : "Maus freigeben fuer UI [F2]", ImVec2(260, 28))) {
-                            ToggleMouseMode();
+                        if (ImGui::Button(g_bUIModeActive ? "Maus im Spiel fangen [F2]" : "Maus freigeben fuer UI [F2]", ImVec2(260, 28))) {
+                            ToggleUIMode();
                         }
                         ImGui::SameLine();
                         ImGui::TextDisabled("[Hotkey: F2]");
@@ -783,43 +821,66 @@ namespace MadMultiplayer {
         ImGui::End();
     }
 
-    // SICHERES MOUSE-UNLOCK & WNDPROC HOOKING (BLOCK GAME INPUT ON UI)
+    // MANDATORY WNDPROC QUARANTINE & MODAL INPUT ISOLATION
     LRESULT D3D8Hook::HandleGameWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
-        // 1. WM_SETCURSOR: Im UI-Bedienmodus oder bei geoeffnetem Overlay Cursor anzeigen & freigeben
+        // 1. WM_SETCURSOR: Im UI-Bedienmodus Cursor anzeigen & freigeben
         if (uMsg == WM_SETCURSOR) {
-            if (m_showOverlay.load() || m_mouseInputMode.load()) {
+            if (g_bUIModeActive) {
                 UnlockMouseCursor();
                 return TRUE;
             }
         }
 
-        // 2. ImGui Input-Routing & Block Game Input (Verhindert Marty-Kicks bei UI-Klicks & Collision Crashes)
-        if (m_imguiInitialized.load()) {
-            ImGui_ImplWin32_WndProcHandler(hWnd, uMsg, wParam, lParam);
+        // 2. UI MODE ACTIVE: VOLLE QUARANTAENE (ZERO INGAME CLICK-THROUGH)
+        if (g_bUIModeActive)
+        {
+            // Let ImGui process the message first:
+            if (m_imguiInitialized.load()) {
+                ImGui_ImplWin32_WndProcHandler(hWnd, uMsg, wParam, lParam);
+            }
 
-            ImGuiIO& io = ImGui::GetIO();
-            bool bBlockGameInput = m_showOverlay.load() || io.WantCaptureMouse || io.WantCaptureKeyboard;
+            // Allow F2 to toggle back to Gameplay Mode:
+            if (uMsg == WM_KEYDOWN && wParam == VK_F2) {
+                ToggleUIMode();
+                return 0;
+            }
 
-            if (bBlockGameInput) {
-                // Maus-Events: Wenn Overlay offen oder ImGui die Maus beansprucht -> NIEMALS ans Spiel durchlassen!
-                if ((uMsg >= WM_MOUSEFIRST && uMsg <= WM_MOUSELAST) || uMsg == WM_MOUSEWHEEL) {
+            // SWALLOW ALL MOUSE EVENTS COMPLETELY (Do NOT call CallWindowProc):
+            switch (uMsg) {
+                case WM_LBUTTONDOWN: case WM_LBUTTONUP: case WM_LBUTTONDBLCLK:
+                case WM_RBUTTONDOWN: case WM_RBUTTONUP: case WM_RBUTTONDBLCLK:
+                case WM_MBUTTONDOWN: case WM_MBUTTONUP: case WM_MBUTTONDBLCLK:
+                case WM_MOUSEMOVE:
+                case WM_MOUSEWHEEL:
+                case WM_XBUTTONDOWN: case WM_XBUTTONUP:
+                case WM_INPUT: // Blocks RawInput camera movement
                     return 0;
-                }
+            }
 
-                // Tastatur-Events: Wenn Text getippt wird oder Overlay offen ist -> Schlucken ausser F3 (Toggle)
-                if ((uMsg >= WM_KEYFIRST && uMsg <= WM_KEYLAST) || uMsg == WM_CHAR) {
-                    const auto& cfg = Config::Instance().Get();
-                    bool isToggleKey = (wParam == cfg.keyToggleOverlay) || (wParam == VK_F3) || (wParam == VK_INSERT) ||
-                                       (wParam == cfg.keyToggleMouseMode) || (wParam == VK_F2);
-                    if (!isToggleKey) {
-                        return 0;
-                    }
-                }
+            // Block gameplay movement keys (WASD, Space, etc.) while UI is open:
+            if (uMsg == WM_KEYDOWN || uMsg == WM_KEYUP || uMsg == WM_CHAR) {
+                // Only swallow if ImGui wants text input or to prevent Marty jumping:
+                return 0;
+            }
+        }
+        else
+        {
+            // GAMEPLAY MODE:
+            // Allow F2 to toggle into UI Mode:
+            if (uMsg == WM_KEYDOWN && wParam == VK_F2) {
+                ToggleUIMode();
+                return 0;
+            }
+
+            // Allow F3 / INSERT to toggle overlay visibility:
+            if (uMsg == WM_KEYDOWN && (wParam == VK_F3 || wParam == VK_INSERT)) {
+                ToggleOverlayVisibility();
+                return 0;
             }
         }
 
         // 3. UI-Maus-Offset im Pausenmenue beheben (Widescreen Mouse Scaling)
-        if (m_isBorderless && !m_mouseInputMode.load() && m_screenWidth > 0 && m_screenHeight > 0) {
+        if (m_isBorderless && !g_bUIModeActive && m_screenWidth > 0 && m_screenHeight > 0) {
             if (uMsg == WM_MOUSEMOVE || uMsg == WM_LBUTTONDOWN || uMsg == WM_LBUTTONUP ||
                 uMsg == WM_RBUTTONDOWN || uMsg == WM_RBUTTONUP || uMsg == WM_MBUTTONDOWN || uMsg == WM_MBUTTONUP) {
                 short origX = (short)LOWORD(lParam);
@@ -830,14 +891,7 @@ namespace MadMultiplayer {
             }
         }
 
-        // 4. WM_MOUSEMOVE im UI-Modus
-        if (uMsg == WM_MOUSEMOVE || uMsg == WM_NCMOUSEMOVE) {
-            if (m_mouseInputMode.load() || m_showOverlay.load() || GetForegroundWindow() != m_hGameWindow) {
-                UnlockMouseCursor();
-            }
-        }
-
-        // 5. Alt-Tab / Focus Loss
+        // 4. Alt-Tab / Focus Loss
         if (uMsg == WM_KILLFOCUS || uMsg == WM_ACTIVATEAPP) {
             if (wParam == FALSE) {
                 UnlockMouseCursor();
@@ -851,7 +905,7 @@ namespace MadMultiplayer {
             }
         }
 
-        // 6. Fenster-Drift Fix beim Draggen
+        // 5. Fenster-Drift Fix beim Draggen
         if (uMsg == WM_SYSCOMMAND) {
             DWORD cmd = (wParam & 0xFFF0);
             if (cmd == SC_MOVE || cmd == SC_SIZE) {

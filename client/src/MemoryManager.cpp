@@ -179,32 +179,29 @@ namespace MadMultiplayer {
         return true;
     }
 
-    bool MemoryManager::WriteLocalPosition(float x, float y, float z) {
-        if (!m_playerEntity || !IsValidUserPointer(m_playerEntity)) {
+    bool MemoryManager::SetPlayerPosition(float x, float y, float z) {
+        if (!m_playerEntity) {
+            if (!EnsurePlayerEntity() || !m_playerEntity) {
+                return false;
+            }
+        }
+
+        // Bulletproof Validation auf primaere Koordinaten (+0x150)
+        if (IsBadWritePtr(reinterpret_cast<void*>(m_playerEntity + OFF_POS_X), sizeof(float) * 3)) {
             return false;
         }
 
-        bool success = true;
-        // In primäre und sekundäre Offsets schreiben für vollständige Konsistenz
-        success &= SafeWriteFloat(m_playerEntity + OFF_POS_X_PRIMARY, x);
-        success &= SafeWriteFloat(m_playerEntity + OFF_POS_Y_PRIMARY, y);
-        success &= SafeWriteFloat(m_playerEntity + OFF_POS_Z_PRIMARY, z);
+        *reinterpret_cast<float*>(m_playerEntity + OFF_POS_X) = x;
+        *reinterpret_cast<float*>(m_playerEntity + OFF_POS_Y) = y;
+        *reinterpret_cast<float*>(m_playerEntity + OFF_POS_Z) = z;
 
-        SafeWriteFloat(m_playerEntity + OFF_POS_X_SECONDARY, x);
-        SafeWriteFloat(m_playerEntity + OFF_POS_Y_SECONDARY, y);
-        SafeWriteFloat(m_playerEntity + OFF_POS_Z_SECONDARY, z);
+        // Sekundaere Koordinaten (+0x1F4) aktualisieren, falls zugaenglich
+        if (!IsBadWritePtr(reinterpret_cast<void*>(m_playerEntity + OFF_POS_X_SECONDARY), sizeof(float) * 3)) {
+            *reinterpret_cast<float*>(m_playerEntity + OFF_POS_X_SECONDARY) = x;
+            *reinterpret_cast<float*>(m_playerEntity + OFF_POS_Y_SECONDARY) = y;
+            *reinterpret_cast<float*>(m_playerEntity + OFF_POS_Z_SECONDARY) = z;
+        }
 
-        return success;
-    }
-
-    bool MemoryManager::ZeroVelocities() {
-        if (!EnsurePlayerEntity()) return false;
-        float zero = 0.0f;
-        SafeWriteFloat(m_playerEntity + 0x160, zero);
-        SafeWriteFloat(m_playerEntity + 0x164, zero);
-        SafeWriteFloat(m_playerEntity + 0x168, zero);
-        SafeWriteFloat(m_playerEntity + 0x1EC, zero);
-        SafeWriteFloat(m_playerEntity + 0x1F0, zero);
         return true;
     }
 

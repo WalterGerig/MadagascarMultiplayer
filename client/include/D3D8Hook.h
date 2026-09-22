@@ -39,10 +39,13 @@ namespace MadMultiplayer {
         void ToggleOverlayVisibility();
         void ToggleOverlay() { ToggleOverlayVisibility(); } // Alias
 
-        // F2: Maus-Modus (UI-Bedienung vs. Gameplay-Fesselung)
+        // F2: Maus- / UI-Modus (UI-Bedienung vs. Gameplay-Fesselung)
         bool IsMouseInputMode() const { return m_mouseInputMode.load(); }
+        bool IsUIModeActive() const { return m_mouseInputMode.load(); }
         void ToggleMouseMode();
+        void ToggleUIMode();
         void SetMouseMode(bool uiMouseMode);
+        void SetUIMode(bool uiMouseMode);
         void UpdateMouseCapture();
 
         // Flanken-gesteuertes Hotkey-Polling
@@ -172,4 +175,15 @@ namespace MadMultiplayer {
         static LRESULT CALLBACK Hooked_ConsoleWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
     };
 
+    // Globale Zustandsvariable fuer strikte modale Eingabe-Isolation (F2)
+    extern bool g_bUIModeActive;
+    void ToggleUIMode();
+    void SetUIMode(bool active);
+    bool IsUIModeActive();
+
 } // namespace MadMultiplayer
+
+using MadMultiplayer::g_bUIModeActive;
+using MadMultiplayer::ToggleUIMode;
+using MadMultiplayer::SetUIMode;
+using MadMultiplayer::IsUIModeActive;

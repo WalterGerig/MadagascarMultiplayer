@@ -17,6 +17,10 @@ namespace MadMultiplayer {
         static constexpr uintptr_t OFF_POS_Y_PRIMARY     = 0x154;
         static constexpr uintptr_t OFF_POS_Z_PRIMARY     = 0x158;
 
+        static constexpr uintptr_t OFF_POS_X             = OFF_POS_X_PRIMARY;
+        static constexpr uintptr_t OFF_POS_Y             = OFF_POS_Y_PRIMARY;
+        static constexpr uintptr_t OFF_POS_Z             = OFF_POS_Z_PRIMARY;
+
         static constexpr uintptr_t OFF_POS_X_SECONDARY   = 0x1F4;
         static constexpr uintptr_t OFF_POS_Y_SECONDARY   = 0x1F8;
         static constexpr uintptr_t OFF_POS_Z_SECONDARY   = 0x1FC;
@@ -34,6 +38,7 @@ namespace MadMultiplayer {
         static constexpr uintptr_t OFFSET_CAM_YAW        = 0x00218220;
 
         static MemoryManager& Instance();
+        static MemoryManager& Get() { return Instance(); }
 
         bool Initialize();
         void Shutdown();
@@ -41,9 +46,9 @@ namespace MadMultiplayer {
         // Liest den aktuellen Spielerzustand thread-sicher und SEH-abgesichert aus
         bool ReadLocalPlayer(PlayerTransform& outTransform);
 
-        // Schreibt neue Koordinaten in die Spieler-Entity
-        bool WriteLocalPosition(float x, float y, float z);
-        bool ZeroVelocities();
+        // Schreibt neue Koordinaten in die Spieler-Entity (bulletproof, keine spekulativen Physics-Writes)
+        bool SetPlayerPosition(float x, float y, float z);
+        bool WriteLocalPosition(float x, float y, float z) { return SetPlayerPosition(x, y, z); }
 
         // Health & Stats Manipulation
         bool ReadHealth(int32_t& outHealth);
