@@ -1,8 +1,7 @@
-#include "D3D8Hook.h"
-#include "Logger.h"
-#include "Config.h"
-#include <cstdio>
-#include <cstring>
+#include "../include/D3D8Hook.h"
+#include "../include/Logger.h"
+#include "../include/Config.h"
+#include "../include/CheatManager.h"
 #include <cmath>
 #include "../vendor/imgui/imgui.h"
 #include "../vendor/imgui/imgui_impl_win32.h"
@@ -11,6 +10,102 @@
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 namespace MadMultiplayer {
+
+    void D3D8Hook::SaveD3D8State(IDirect3DDevice8* pDevice, D3D8StateBackup& b) {
+        if (!pDevice) return;
+
+        // 1. Render States
+        pDevice->GetRenderState(D3DRS_ZENABLE, &b.zEnable);
+        pDevice->GetRenderState(D3DRS_FILLMODE, &b.fillMode);
+        pDevice->GetRenderState(D3DRS_ALPHABLENDENABLE, &b.alphaBlend);
+        pDevice->GetRenderState(D3DRS_SRCBLEND, &b.srcBlend);
+        pDevice->GetRenderState(D3DRS_DESTBLEND, &b.destBlend);
+        pDevice->GetRenderState(D3DRS_CULLMODE, &b.cullMode);
+        pDevice->GetRenderState(D3DRS_LIGHTING, &b.lighting);
+        pDevice->GetRenderState(D3DRS_FOGENABLE, &b.fogEnable);
+        pDevice->GetRenderState(D3DRS_ALPHATESTENABLE, &b.alphaTest);
+
+        // 2. Texture Stage States Stage 0 & 1
+        pDevice->GetTextureStageState(0, D3DTSS_COLOROP, &b.colorOp0);
+        pDevice->GetTextureStageState(0, D3DTSS_ALPHAOP, &b.alphaOp0);
+        pDevice->GetTextureStageState(0, D3DTSS_COLORARG1, &b.colorArg1_0);
+        pDevice->GetTextureStageState(0, D3DTSS_COLORARG2, &b.colorArg2_0);
+        pDevice->GetTextureStageState(0, D3DTSS_ALPHAARG1, &b.alphaArg1_0);
+        pDevice->GetTextureStageState(0, D3DTSS_ALPHAARG2, &b.alphaArg2_0);
+        pDevice->GetTextureStageState(0, D3DTSS_MINFILTER, &b.minFilter0);
+        pDevice->GetTextureStageState(0, D3DTSS_MAGFILTER, &b.magFilter0);
+
+        pDevice->GetTextureStageState(1, D3DTSS_COLOROP, &b.colorOp1);
+        pDevice->GetTextureStageState(1, D3DTSS_ALPHAOP, &b.alphaOp1);
+        pDevice->GetTextureStageState(1, D3DTSS_MINFILTER, &b.minFilter1);
+        pDevice->GetTextureStageState(1, D3DTSS_MAGFILTER, &b.magFilter1);
+
+        // 3. Shaders, Vertex Buffers & Indices
+        pDevice->GetVertexShader(&b.vertexShader);
+        b.streamSource0 = nullptr;
+        b.streamStride0 = 0;
+        pDevice->GetStreamSource(0, &b.streamSource0, &b.streamStride0);
+        b.indexBuffer = nullptr;
+        b.baseVertexIndex = 0;
+        pDevice->GetIndices(&b.indexBuffer, &b.baseVertexIndex);
+
+        // 4. Textures
+        b.texture0 = nullptr;
+        b.texture1 = nullptr;
+        pDevice->GetTexture(0, &b.texture0);
+        pDevice->GetTexture(1, &b.texture1);
+
+        // 5. Viewport
+        pDevice->GetViewport(&b.viewport);
+    }
+
+    void D3D8Hook::RestoreD3D8State(IDirect3DDevice8* pDevice, const D3D8StateBackup& b) {
+        if (!pDevice) return;
+
+        // 1. Render States
+        pDevice->SetRenderState(D3DRS_ZENABLE, b.zEnable);
+        pDevice->SetRenderState(D3DRS_FILLMODE, b.fillMode);
+        pDevice->SetRenderState(D3DRS_ALPHABLENDENABLE, b.alphaBlend);
+        pDevice->SetRenderState(D3DRS_SRCBLEND, b.srcBlend);
+        pDevice->SetRenderState(D3DRS_DESTBLEND, b.destBlend);
+        pDevice->SetRenderState(D3DRS_CULLMODE, b.cullMode);
+        pDevice->SetRenderState(D3DRS_LIGHTING, b.lighting);
+        pDevice->SetRenderState(D3DRS_FOGENABLE, b.fogEnable);
+        pDevice->SetRenderState(D3DRS_ALPHATESTENABLE, b.alphaTest);
+
+        // 2. Texture Stage States Stage 0 & 1
+        pDevice->SetTextureStageState(0, D3DTSS_COLOROP, b.colorOp0);
+        pDevice->SetTextureStageState(0, D3DTSS_ALPHAOP, b.alphaOp0);
+        pDevice->SetTextureStageState(0, D3DTSS_COLORARG1, b.colorArg1_0);
+        pDevice->SetTextureStageState(0, D3DTSS_COLORARG2, b.colorArg2_0);
+        pDevice->SetTextureStageState(0, D3DTSS_ALPHAARG1, b.alphaArg1_0);
+        pDevice->SetTextureStageState(0, D3DTSS_ALPHAARG2, b.alphaArg2_0);
+        pDevice->SetTextureStageState(0, D3DTSS_MINFILTER, b.minFilter0);
+        pDevice->SetTextureStageState(0, D3DTSS_MAGFILTER, b.magFilter0);
+
+        pDevice->SetTextureStageState(1, D3DTSS_COLOROP, b.colorOp1);
+        pDevice->SetTextureStageState(1, D3DTSS_ALPHAOP, b.alphaOp1);
+        pDevice->SetTextureStageState(1, D3DTSS_MINFILTER, b.minFilter1);
+        pDevice->SetTextureStageState(1, D3DTSS_MAGFILTER, b.magFilter1);
+
+        // 3. Shaders, Vertex Buffers & Indices
+        pDevice->SetVertexShader(b.vertexShader);
+        pDevice->SetStreamSource(0, b.streamSource0, b.streamStride0);
+        if (b.streamSource0) b.streamSource0->Release();
+
+        pDevice->SetIndices(b.indexBuffer, b.baseVertexIndex);
+        if (b.indexBuffer) b.indexBuffer->Release();
+
+        // 4. Textures
+        pDevice->SetTexture(0, b.texture0);
+        if (b.texture0) b.texture0->Release();
+
+        pDevice->SetTexture(1, b.texture1);
+        if (b.texture1) b.texture1->Release();
+
+        // 5. Viewport
+        pDevice->SetViewport(&b.viewport);
+    }
 
     D3D8Hook& D3D8Hook::Instance() {
         static D3D8Hook instance;
@@ -283,6 +378,7 @@ namespace MadMultiplayer {
         if (!vtable) return false;
 
         PFN_Reset targetReset = reinterpret_cast<PFN_Reset>(vtable[14]);
+        PFN_Present targetPresent = reinterpret_cast<PFN_Present>(vtable[15]);
         PFN_EndScene targetEndScene = reinterpret_cast<PFN_EndScene>(vtable[35]);
         PFN_SetTransform targetSetTransform = reinterpret_cast<PFN_SetTransform>(vtable[37]);
         PFN_SetViewport targetSetViewport = reinterpret_cast<PFN_SetViewport>(vtable[40]);
@@ -290,11 +386,12 @@ namespace MadMultiplayer {
         PFN_DrawPrimitiveUP targetDrawPrimitiveUP = reinterpret_cast<PFN_DrawPrimitiveUP>(vtable[72]);
         PFN_SetVertexShader targetSetVertexShader = reinterpret_cast<PFN_SetVertexShader>(vtable[76]);
 
-        if (targetEndScene == Hooked_EndScene) {
+        if (targetPresent == Hooked_Present) {
             return true;
         }
 
         m_pOriginalReset = targetReset;
+        m_pOriginalPresent = targetPresent;
         m_pOriginalEndScene = targetEndScene;
         m_pOriginalSetTransform = targetSetTransform;
         m_pOriginalSetViewport = targetSetViewport;
@@ -310,6 +407,7 @@ namespace MadMultiplayer {
         }
 
         vtable[14] = reinterpret_cast<void*>(&Hooked_Reset);
+        vtable[15] = reinterpret_cast<void*>(&Hooked_Present);
         vtable[35] = reinterpret_cast<void*>(&Hooked_EndScene);
         vtable[37] = reinterpret_cast<void*>(&Hooked_SetTransform);
         vtable[40] = reinterpret_cast<void*>(&Hooked_SetViewport);
@@ -321,7 +419,7 @@ namespace MadMultiplayer {
 
         m_initialized.store(true);
         MAD_LOG("[D3D8Hook] DIRECT MEMORY HOOK SUCCESS: D3D8 Device at 0x%p hooked!", (void*)m_pDevice);
-        MAD_LOG("[D3D8Hook] VTable Swapped: Reset(14), EndScene(35), SetTransform(37), SetViewport(40), DrawPrim(70), DrawPrimUP(72), SetVS(76)");
+        MAD_LOG("[D3D8Hook] VTable Swapped: Reset(14), Present(15), EndScene(35), SetTransform(37), SetViewport(40), DrawPrim(70), DrawPrimUP(72), SetVS(76)");
         return true;
     }
 
@@ -430,19 +528,43 @@ namespace MadMultiplayer {
 
     void D3D8Hook::OnEndScene(IDirect3DDevice8* pDevice) {
         m_pDevice = pDevice;
+        // In Madagascar (2005) ruft RenderWare EndScene mehrfach pro Frame auf (Schattenpass, Weltpass, 2D UI).
+        // Das tatsaechliche Rendern von ImGui findet strikt 1x pro Frame in OnPresent() statt,
+        // um Multi-Layer Stacking und Ghosting restlos zu eliminieren!
+    }
+
+    void D3D8Hook::OnPresent(IDirect3DDevice8* pDevice) {
+        m_pDevice = pDevice;
         uint64_t frame = ++m_frameCount;
 
-        if (frame == 1 || frame == 10 || frame == 100 || frame % 1000 == 0) {
-            MAD_LOG("[D3D8Hook] IDirect3DDevice8::EndScene Hook ACTIVE! Frame: %llu", frame);
+        // 1. DeltaTime Berechnung für sanfte Bewegung & Cheats
+        if (m_perfFreq.QuadPart == 0) {
+            QueryPerformanceFrequency(&m_perfFreq);
+            QueryPerformanceCounter(&m_lastFrameTime);
+        }
+        LARGE_INTEGER now;
+        QueryPerformanceCounter(&now);
+        double elapsed = (double)(now.QuadPart - m_lastFrameTime.QuadPart) / (double)m_perfFreq.QuadPart;
+        m_lastFrameTime = now;
+        m_lastDeltaTime = (float)elapsed;
+        if (m_lastDeltaTime <= 0.0f || m_lastDeltaTime > 0.1f) {
+            m_lastDeltaTime = 0.0166f;
         }
 
-        // 5. Hotkeys einmal pro Render-Frame flankengesteuert abfragen
+        if (frame == 1 || frame == 10 || frame == 100 || frame % 1000 == 0) {
+            MAD_LOG("[D3D8Hook] IDirect3DDevice8::Present Hook ACTIVE! Frame: %llu (dt: %.2f ms)", frame, m_lastDeltaTime * 1000.0f);
+        }
+
+        // 2. Hotkeys flankengesteuert verarbeiten
         ProcessHotkeys();
 
-        // 1. RenderWare Kamera-Frustum kontinuierlich auf Widescreen halten
+        // 3. RenderWare Kamera-Frustum kontinuierlich auf Widescreen halten
         UpdateRenderWareCameraFrustum();
 
-        // Lazy Initialization von ImGui beim ersten echten EndScene-Aufruf
+        // 4. In-Game Cheat Manager pro Frame aktualisieren
+        CheatManager::Instance().Update(m_lastDeltaTime);
+
+        // 5. Lazy Initialization von ImGui beim ersten echten Present-Aufruf
         if (!m_imguiInitialized.load()) {
             if (!m_hGameWindow) {
                 m_hGameWindow = FindWindowA("RWSConsoleD3D8", nullptr);
@@ -456,7 +578,7 @@ namespace MadMultiplayer {
 
             m_hConsoleWindow = GetConsoleWindow();
 
-            MAD_LOG("[D3D8Hook] ImGui Initialisierung beim ersten EndScene Aufruf fuer HWND: 0x%08X...", (unsigned int)(uintptr_t)m_hGameWindow);
+            MAD_LOG("[D3D8Hook] ImGui Initialisierung beim ersten Present Aufruf fuer HWND: 0x%08X...", (unsigned int)(uintptr_t)m_hGameWindow);
 
             if (m_hGameWindow) {
                 m_pOriginalGameWndProc = reinterpret_cast<WNDPROC>(
@@ -490,19 +612,17 @@ namespace MadMultiplayer {
             }
         }
 
-        // F3: Rendern NUR wenn m_showOverlay aktiv ist!
+        // 6. STRICT FRAME GATE & COMPLETE D3D8 STATE PRESERVATION:
+        // Rendern NUR wenn m_showOverlay aktiv ist - Exakt 1x pro Present auf den Backbuffer!
         if (m_imguiInitialized.load() && m_showOverlay.load()) {
-            // D3D8 RenderStates absichern
-            DWORD oldZEnable = 0, oldLighting = 0, oldAlphaBlend = 0, oldCullMode = 0;
-            pDevice->GetRenderState(D3DRS_ZENABLE, &oldZEnable);
-            pDevice->GetRenderState(D3DRS_LIGHTING, &oldLighting);
-            pDevice->GetRenderState(D3DRS_ALPHABLENDENABLE, &oldAlphaBlend);
-            pDevice->GetRenderState(D3DRS_CULLMODE, &oldCullMode);
+            D3D8StateBackup backup{};
+            SaveD3D8State(pDevice, backup);
 
-            pDevice->SetRenderState(D3DRS_ZENABLE, FALSE);
-            pDevice->SetRenderState(D3DRS_LIGHTING, FALSE);
-            pDevice->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
-            pDevice->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+            bool bSceneStarted = false;
+            HRESULT hrBegin = pDevice->BeginScene();
+            if (SUCCEEDED(hrBegin)) {
+                bSceneStarted = true;
+            }
 
             ImGui_ImplDX8_NewFrame();
             ImGui_ImplWin32_NewFrame();
@@ -514,12 +634,14 @@ namespace MadMultiplayer {
             ImGui::Render();
             ImGui_ImplDX8_RenderDrawData(ImGui::GetDrawData());
 
-            // RenderStates nach dem Zeichnen wiederherstellen
-            pDevice->SetRenderState(D3DRS_ZENABLE, oldZEnable);
-            pDevice->SetRenderState(D3DRS_LIGHTING, oldLighting);
-            pDevice->SetRenderState(D3DRS_ALPHABLENDENABLE, oldAlphaBlend);
-            pDevice->SetRenderState(D3DRS_CULLMODE, oldCullMode);
+            if (bSceneStarted) {
+                pDevice->EndScene();
+            }
+
+            RestoreD3D8State(pDevice, backup);
         }
+
+        m_frameRendered.store(true);
     }
 
     void D3D8Hook::OnPreReset(IDirect3DDevice8* pDevice) {
@@ -628,7 +750,13 @@ namespace MadMultiplayer {
                     ImGui::EndTabItem();
                 }
 
-                // 4. SAUBERER LOG-TAB OHNE HIEROGLYPHEN DURCH ASCII-SANITY & TextUnformatted
+                // 2. CHEATS & SANDBOX TAB
+                if (ImGui::BeginTabItem("Cheats & Sandbox")) {
+                    CheatManager::Instance().RenderMenu();
+                    ImGui::EndTabItem();
+                }
+
+                // 3. SAUBERER LOG-TAB OHNE HIEROGLYPHEN DURCH ASCII-SANITY & TextUnformatted
                 if (ImGui::BeginTabItem("Debug & Engine Logs")) {
                     ImGui::Text("Render Frames Count: %llu", (unsigned long long)m_frameCount.load());
                     if (ImGui::Button("Logs leeren")) {
@@ -749,6 +877,13 @@ namespace MadMultiplayer {
         }
 
         return CallWindowProcA(m_pOriginalConsoleWndProc, hWnd, uMsg, wParam, lParam);
+    }
+
+    HRESULT STDMETHODCALLTYPE D3D8Hook::Hooked_Present(IDirect3DDevice8* pDevice, CONST RECT* pSourceRect, CONST RECT* pDestRect, HWND hDestWindowOverride, CONST RGNDATA* pDirtyRegion) {
+        auto& hook = D3D8Hook::Instance();
+        hook.m_frameRendered.store(false);
+        hook.OnPresent(pDevice);
+        return hook.m_pOriginalPresent ? hook.m_pOriginalPresent(pDevice, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion) : D3D_OK;
     }
 
     HRESULT STDMETHODCALLTYPE D3D8Hook::Hooked_EndScene(IDirect3DDevice8* pDevice) {

@@ -1,5 +1,4 @@
-#include "Config.h"
-#include <cstdio>
+#include "../include/Config.h"
 #include <fstream>
 
 namespace MadMultiplayer {
@@ -49,6 +48,20 @@ namespace MadMultiplayer {
         m_data.defaultPort         = GetPrivateProfileIntA("Network", "DefaultPort", 27015, ini);
         m_data.autoEnableWidescreen= GetPrivateProfileIntA("Display", "AutoEnableWidescreen", 0, ini);
         m_data.enableFileLogging   = GetPrivateProfileIntA("Debug", "EnableFileLogging", 1, ini);
+
+        // Cheats & Sandbox
+        m_data.keyToggleFlight            = GetPrivateProfileIntA("Cheats", "KeyToggleFlight", 78, ini);
+        m_data.enableGodModeDefault       = GetPrivateProfileIntA("Cheats", "EnableGodModeDefault", 0, ini);
+        m_data.enableInfiniteJumpDefault  = GetPrivateProfileIntA("Cheats", "EnableInfiniteJumpDefault", 0, ini);
+
+        char floatBuf[64] = "1.0";
+        GetPrivateProfileStringA("Cheats", "DefaultFlightSpeed", "1.0", floatBuf, sizeof(floatBuf), ini);
+        m_data.defaultFlightSpeed = (float)atof(floatBuf);
+        if (m_data.defaultFlightSpeed <= 0.05f) m_data.defaultFlightSpeed = 1.0f;
+
+        GetPrivateProfileStringA("Cheats", "DefaultMoveSpeedMultiplier", "1.0", floatBuf, sizeof(floatBuf), ini);
+        m_data.defaultMoveSpeedMultiplier = (float)atof(floatBuf);
+        if (m_data.defaultMoveSpeedMultiplier <= 0.05f) m_data.defaultMoveSpeedMultiplier = 1.0f;
     }
 
     void Config::Save() {
@@ -70,7 +83,14 @@ namespace MadMultiplayer {
             file << "AutoEnableWidescreen=" << m_data.autoEnableWidescreen << "     ; 1 = Borderless Widescreen automatisch beim Start\n\n";
 
             file << "[Debug]\n";
-            file << "EnableFileLogging=" << m_data.enableFileLogging << "        ; 1 = Synchrones Logging in multiplayer_debug.log\n";
+            file << "EnableFileLogging=" << m_data.enableFileLogging << "        ; 1 = Synchrones Logging in multiplayer_debug.log\n\n";
+
+            file << "[Cheats]\n";
+            file << "KeyToggleFlight=" << m_data.keyToggleFlight << "           ; N (VK_N = 78 / 0x4E) -> Noclip / Flugmodus umschalten\n";
+            file << "DefaultFlightSpeed=" << m_data.defaultFlightSpeed << "       ; Standard-Fluggeschwindigkeit\n";
+            file << "EnableGodModeDefault=" << m_data.enableGodModeDefault << "     ; 1 = God Mode beim Start aktiv\n";
+            file << "EnableInfiniteJumpDefault=" << m_data.enableInfiniteJumpDefault << " ; 1 = Unendlicher Sprung beim Start aktiv\n";
+            file << "DefaultMoveSpeedMultiplier=" << m_data.defaultMoveSpeedMultiplier << " ; Standard-Laufgeschwindigkeitsmultiplikator\n";
             file.close();
         }
     }

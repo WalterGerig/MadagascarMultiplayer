@@ -4,11 +4,11 @@
 #include <chrono>
 #include <thread>
 
-#include "MemoryManager.h"
-#include "PlayerTransform.h"
-#include "D3D8Hook.h"
-#include "Logger.h"
-#include "Config.h"
+#include "../include/MemoryManager.h"
+#include "../include/PlayerTransform.h"
+#include "../include/D3D8Hook.h"
+#include "../include/Logger.h"
+#include "../include/Config.h"
 
 namespace {
 

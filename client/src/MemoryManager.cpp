@@ -1,4 +1,4 @@
-#include "MemoryManager.h"
+#include "../include/MemoryManager.h"
 #include <cstdio>
 #include <cstring>
 
@@ -28,6 +28,46 @@ namespace MadMultiplayer {
     static bool SafeWriteFloat(uintptr_t address, float value) {
         __try {
             *reinterpret_cast<volatile float*>(address) = value;
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+    }
+
+    static bool SafeReadInt32(uintptr_t address, int32_t& outValue) {
+        __try {
+            outValue = *reinterpret_cast<const volatile int32_t*>(address);
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+    }
+
+    static bool SafeWriteInt32(uintptr_t address, int32_t value) {
+        __try {
+            *reinterpret_cast<volatile int32_t*>(address) = value;
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+    }
+
+    static bool SafeReadBytesRaw(uintptr_t address, void* buffer, size_t size) {
+        __try {
+            std::memcpy(buffer, reinterpret_cast<const void*>(address), size);
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+    }
+
+    static bool SafeWriteBytesRaw(uintptr_t address, const void* buffer, size_t size) {
+        __try {
+            std::memcpy(reinterpret_cast<void*>(address), buffer, size);
             return true;
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -173,6 +213,69 @@ namespace MadMultiplayer {
         SafeWriteFloat(m_playerEntity + OFF_POS_Z_SECONDARY, z);
 
         return success;
+    }
+
+    bool MemoryManager::EnsurePlayerEntity() {
+        if (!m_initialized) return false;
+        uintptr_t entity = 0;
+        if (ResolvePlayerEntityInternal(entity) && IsValidUserPointer(entity)) {
+            m_playerEntity = entity;
+            return true;
+        }
+        m_playerEntity = 0;
+        return false;
+    }
+
+    bool MemoryManager::ReadHealth(int32_t& outHealth) {
+        if (!EnsurePlayerEntity()) return false;
+        return SafeReadInt32(m_playerEntity + OFF_HEALTH, outHealth);
+    }
+
+    bool MemoryManager::WriteHealth(int32_t health) {
+        if (!EnsurePlayerEntity()) return false;
+        bool ok = SafeWriteInt32(m_playerEntity + OFF_HEALTH, health);
+        SafeWriteInt32(m_playerEntity + OFF_MAX_HEALTH, (health > 100) ? health : 100);
+        return ok;
+    }
+
+    bool MemoryManager::ReadCoins(int32_t& outCoins) {
+        if (!EnsurePlayerEntity()) return false;
+        return SafeReadInt32(m_playerEntity + OFF_COINS, outCoins);
+    }
+
+    bool MemoryManager::WriteCoins(int32_t coins) {
+        if (!EnsurePlayerEntity()) return false;
+        return SafeWriteInt32(m_playerEntity + OFF_COINS, coins);
+    }
+
+    bool MemoryManager::ReadMangoAmmo(int32_t& outAmmo) {
+        if (!EnsurePlayerEntity()) return false;
+        return SafeReadInt32(m_playerEntity + OFF_MANGO_AMMO, outAmmo);
+    }
+
+    bool MemoryManager::WriteMangoAmmo(int32_t ammo) {
+        if (!EnsurePlayerEntity()) return false;
+        return SafeWriteInt32(m_playerEntity + OFF_MANGO_AMMO, ammo);
+    }
+
+    bool MemoryManager::ReadPawTokens(int32_t& outTokens) {
+        if (!EnsurePlayerEntity()) return false;
+        return SafeReadInt32(m_playerEntity + OFF_PAW_TOKENS, outTokens);
+    }
+
+    bool MemoryManager::WritePawTokens(int32_t tokens) {
+        if (!EnsurePlayerEntity()) return false;
+        return SafeWriteInt32(m_playerEntity + OFF_PAW_TOKENS, tokens);
+    }
+
+    bool MemoryManager::SafeReadBytes(uintptr_t address, void* buffer, size_t size) {
+        if (!address || !buffer || !IsValidUserPointer(address)) return false;
+        return SafeReadBytesRaw(address, buffer, size);
+    }
+
+    bool MemoryManager::SafeWriteBytes(uintptr_t address, const void* buffer, size_t size) {
+        if (!address || !buffer || !IsValidUserPointer(address)) return false;
+        return SafeWriteBytesRaw(address, buffer, size);
     }
 
     bool MemoryManager::SetPhysicsPatch(bool enable) {

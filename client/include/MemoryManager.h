@@ -21,6 +21,13 @@ namespace MadMultiplayer {
         static constexpr uintptr_t OFF_POS_Y_SECONDARY   = 0x1F8;
         static constexpr uintptr_t OFF_POS_Z_SECONDARY   = 0x1FC;
 
+        // Stats & Collectibles Offsets in der Spieler-Entity
+        static constexpr uintptr_t OFF_HEALTH            = 0x184; // 32-bit Integer (Health)
+        static constexpr uintptr_t OFF_MAX_HEALTH        = 0x188; // 32-bit Integer (Max Health)
+        static constexpr uintptr_t OFF_COINS             = 0x18C; // 32-bit Integer (Coins/Money)
+        static constexpr uintptr_t OFF_MANGO_AMMO        = 0x190; // 32-bit Integer (Fruit/Mango Ammo)
+        static constexpr uintptr_t OFF_PAW_TOKENS        = 0x194; // 32-bit Integer (Paw/Tiki Tokens)
+
         // Globale Engine-Adressen
         static constexpr uintptr_t OFFSET_PAUSED         = 0x0022A520;
         static constexpr uintptr_t OFFSET_CAM_PITCH      = 0x002181FC;
@@ -38,12 +45,27 @@ namespace MadMultiplayer {
         // Schreibt neue Koordinaten in die Spieler-Entity
         bool WriteLocalPosition(float x, float y, float z);
 
+        // Health & Stats Manipulation
+        bool ReadHealth(int32_t& outHealth);
+        bool WriteHealth(int32_t health);
+        bool ReadCoins(int32_t& outCoins);
+        bool WriteCoins(int32_t coins);
+        bool ReadMangoAmmo(int32_t& outAmmo);
+        bool WriteMangoAmmo(int32_t ammo);
+        bool ReadPawTokens(int32_t& outTokens);
+        bool WritePawTokens(int32_t tokens);
+
+        // Generische SEH-geschützte Speicherzugriffe
+        bool SafeReadBytes(uintptr_t address, void* buffer, size_t size);
+        bool SafeWriteBytes(uintptr_t address, const void* buffer, size_t size);
+
         // NOP-Patch für Physik-Overwrite (0x00428E9C) aktivieren / deaktivieren
         bool SetPhysicsPatch(bool enable);
         bool IsPhysicsPatched() const { return m_physicsPatched; }
 
         uintptr_t GetModuleBase() const { return m_moduleBase; }
         uintptr_t GetPlayerEntity() const { return m_playerEntity; }
+        bool EnsurePlayerEntity();
 
     private:
         MemoryManager() = default;

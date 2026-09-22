@@ -25,6 +25,7 @@ namespace MadMultiplayer {
         void OnDeviceCreated(IDirect3DDevice8* pDevice, HWND hGameWindow);
 
         // VTable Callback Handlers
+        void OnPresent(IDirect3DDevice8* pDevice);
         void OnEndScene(IDirect3DDevice8* pDevice);
         void OnPreReset(IDirect3DDevice8* pDevice);
         void OnPostReset(IDirect3DDevice8* pDevice);
@@ -44,7 +45,7 @@ namespace MadMultiplayer {
         void SetMouseMode(bool uiMouseMode);
         void UpdateMouseCapture();
 
-        // Flanken-gesteuertes Hotkey-Polling (wird in OnEndScene aufgerufen)
+        // Flanken-gesteuertes Hotkey-Polling
         void ProcessHotkeys();
 
         // RenderWare Frustum Culling Anpassung
@@ -59,20 +60,62 @@ namespace MadMultiplayer {
         D3D8Hook() = default;
         ~D3D8Hook();
 
+        struct D3D8StateBackup {
+            DWORD zEnable{ 0 };
+            DWORD fillMode{ 0 };
+            DWORD alphaBlend{ 0 };
+            DWORD srcBlend{ 0 };
+            DWORD destBlend{ 0 };
+            DWORD cullMode{ 0 };
+            DWORD lighting{ 0 };
+            DWORD fogEnable{ 0 };
+            DWORD alphaTest{ 0 };
+
+            DWORD colorOp0{ 0 };
+            DWORD alphaOp0{ 0 };
+            DWORD colorArg1_0{ 0 };
+            DWORD colorArg2_0{ 0 };
+            DWORD alphaArg1_0{ 0 };
+            DWORD alphaArg2_0{ 0 };
+            DWORD minFilter0{ 0 };
+            DWORD magFilter0{ 0 };
+
+            DWORD colorOp1{ 0 };
+            DWORD alphaOp1{ 0 };
+            DWORD minFilter1{ 0 };
+            DWORD magFilter1{ 0 };
+
+            DWORD vertexShader{ 0 };
+            IDirect3DVertexBuffer8* streamSource0{ nullptr };
+            UINT streamStride0{ 0 };
+            IDirect3DIndexBuffer8* indexBuffer{ nullptr };
+            UINT baseVertexIndex{ 0 };
+
+            IDirect3DBaseTexture8* texture0{ nullptr };
+            IDirect3DBaseTexture8* texture1{ nullptr };
+
+            D3DVIEWPORT8 viewport{};
+        };
+
+        static void SaveD3D8State(IDirect3DDevice8* pDevice, D3D8StateBackup& backup);
+        static void RestoreD3D8State(IDirect3DDevice8* pDevice, const D3D8StateBackup& backup);
+
         static DWORD WINAPI InitThreadProc(LPVOID lpParam);
         void RenderOverlayUI();
         void UnlockMouseCursor();
 
-        using PFN_EndScene        = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice8*);
         using PFN_Reset           = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice8*, D3DPRESENT_PARAMETERS*);
+        using PFN_Present         = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice8*, CONST RECT*, CONST RECT*, HWND, CONST RGNDATA*);
+        using PFN_EndScene        = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice8*);
         using PFN_SetTransform    = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice8*, DWORD, CONST D3DMATRIX*);
         using PFN_SetViewport     = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice8*, CONST D3DVIEWPORT8*);
         using PFN_DrawPrimitive   = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice8*, D3DPRIMITIVETYPE, UINT, UINT);
         using PFN_DrawPrimitiveUP = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice8*, D3DPRIMITIVETYPE, UINT, CONST void*, UINT);
         using PFN_SetVertexShader = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice8*, DWORD);
 
-        PFN_EndScene        m_pOriginalEndScene{ nullptr };
         PFN_Reset           m_pOriginalReset{ nullptr };
+        PFN_Present         m_pOriginalPresent{ nullptr };
+        PFN_EndScene        m_pOriginalEndScene{ nullptr };
         PFN_SetTransform    m_pOriginalSetTransform{ nullptr };
         PFN_SetViewport     m_pOriginalSetViewport{ nullptr };
         PFN_DrawPrimitive   m_pOriginalDrawPrimitive{ nullptr };
@@ -88,6 +131,12 @@ namespace MadMultiplayer {
         std::atomic<bool>     m_initialized{ false };
         std::atomic<bool>     m_imguiInitialized{ false };
         std::atomic<uint64_t> m_frameCount{ 0 };
+        std::atomic<bool>     m_frameRendered{ false };    // Strict frame gate: Only 1 ImGui render per Present!
+
+        // Frame Delta Time Berechnung
+        LARGE_INTEGER         m_lastFrameTime{ 0 };
+        LARGE_INTEGER         m_perfFreq{ 0 };
+        float                 m_lastDeltaTime{ 0.0166f };
 
         // 1. Getrennte Hotkey-Zustände (F2 = Maus-Modus, F3 = Menü-Sichtbarkeit)
         std::atomic<bool>     m_showOverlay{ true };       // Standardmäßig beim Start sichtbar
@@ -110,6 +159,7 @@ namespace MadMultiplayer {
         bool m_isConnected{ false };
 
         // Statische Hooks für VTable & WndProc
+        static HRESULT STDMETHODCALLTYPE Hooked_Present(IDirect3DDevice8* pDevice, CONST RECT* pSourceRect, CONST RECT* pDestRect, HWND hDestWindowOverride, CONST RGNDATA* pDirtyRegion);
         static HRESULT STDMETHODCALLTYPE Hooked_EndScene(IDirect3DDevice8* pDevice);
         static HRESULT STDMETHODCALLTYPE Hooked_Reset(IDirect3DDevice8* pDevice, D3DPRESENT_PARAMETERS* pPresentationParameters);
         static HRESULT STDMETHODCALLTYPE Hooked_SetTransform(IDirect3DDevice8* pDevice, DWORD State, CONST D3DMATRIX* pMatrix);
