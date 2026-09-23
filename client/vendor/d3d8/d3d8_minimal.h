@@ -121,8 +121,19 @@ typedef enum _D3DRENDERSTATETYPE {
     D3DRS_PATCHEDGESTYLE    = 163,
     D3DRS_COLORWRITEENABLE  = 168,
     D3DRS_BLENDOP           = 171,
+    D3DRS_SCISSORTESTENABLE = 174,
     D3DRS_FORCE_DWORD       = 0x7fffffff
 } D3DRENDERSTATETYPE;
+
+typedef enum _D3DTRANSFORMSTATETYPE {
+    D3DTS_VIEW          = 2,
+    D3DTS_PROJECTION    = 3,
+    D3DTS_TEXTURE0      = 16,
+    D3DTS_TEXTURE1      = 17,
+    D3DTS_FORCE_DWORD   = 0x7fffffff
+} D3DTRANSFORMSTATETYPE;
+
+#define D3DTS_WORLD (D3DTRANSFORMSTATETYPE)256
 
 typedef enum _D3DTEXTURESTAGESTATETYPE {
     D3DTSS_COLOROP          = 1,
@@ -131,13 +142,37 @@ typedef enum _D3DTEXTURESTAGESTATETYPE {
     D3DTSS_ALPHAOP          = 4,
     D3DTSS_ALPHAARG1        = 5,
     D3DTSS_ALPHAARG2        = 6,
+    D3DTSS_TEXCOORDINDEX    = 11,
+    D3DTSS_ADDRESSU         = 13,
+    D3DTSS_ADDRESSV         = 14,
     D3DTSS_MINFILTER        = 16,
     D3DTSS_MAGFILTER        = 17,
     D3DTSS_MIPFILTER        = 18,
-    D3DTSS_ADDRESSU         = 13,
-    D3DTSS_ADDRESSV         = 14,
+    D3DTSS_TEXTURETRANSFORMFLAGS = 24,
     D3DTSS_FORCE_DWORD      = 0x7fffffff
 } D3DTEXTURESTAGESTATETYPE;
+
+#define D3DTTFF_DISABLE         0
+#define D3DTTFF_COUNT1          1
+#define D3DTTFF_COUNT2          2
+#define D3DTTFF_COUNT3          3
+#define D3DTTFF_COUNT4          4
+#define D3DTTFF_PROJECTED       256
+
+#define D3DFILL_POINT           1
+#define D3DFILL_WIREFRAME       2
+#define D3DFILL_SOLID           3
+
+#define D3DTADDRESS_WRAP        1
+#define D3DTADDRESS_MIRROR      2
+#define D3DTADDRESS_CLAMP       3
+#define D3DTADDRESS_BORDER      4
+#define D3DTADDRESS_MIRRORONCE  5
+
+#define D3DTEXF_NONE            0
+#define D3DTEXF_POINT           1
+#define D3DTEXF_LINEAR          2
+#define D3DTEXF_ANISOTROPIC     3
 
 typedef enum _D3DTEXTUREOP {
     D3DTOP_DISABLE          = 1,
@@ -222,6 +257,23 @@ typedef struct _D3DLOCKED_RECT {
     INT                 Pitch;
     void*               pBits;
 } D3DLOCKED_RECT;
+
+typedef struct _D3DINDEXBUFFER_DESC {
+    D3DFORMAT           Format;
+    DWORD               Type;
+    DWORD               Usage;
+    D3DPOOL             Pool;
+    UINT                Size;
+} D3DINDEXBUFFER_DESC;
+
+typedef struct _D3DVERTEXBUFFER_DESC {
+    D3DFORMAT           Format;
+    DWORD               Type;
+    DWORD               Usage;
+    D3DPOOL             Pool;
+    UINT                Size;
+    DWORD               FVF;
+} D3DVERTEXBUFFER_DESC;
 
 // Forward declarations of interfaces
 struct IDirect3D8;

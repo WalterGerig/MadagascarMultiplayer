@@ -17,17 +17,28 @@ namespace MadMultiplayer {
         static constexpr uintptr_t OFF_POS_Y_PRIMARY     = 0x154;
         static constexpr uintptr_t OFF_POS_Z_PRIMARY     = 0x158;
 
+        static constexpr uintptr_t OFF_POS_X             = OFF_POS_X_PRIMARY;
+        static constexpr uintptr_t OFF_POS_Y             = OFF_POS_Y_PRIMARY;
+        static constexpr uintptr_t OFF_POS_Z             = OFF_POS_Z_PRIMARY;
+
         static constexpr uintptr_t OFF_POS_X_SECONDARY   = 0x1F4;
         static constexpr uintptr_t OFF_POS_Y_SECONDARY   = 0x1F8;
         static constexpr uintptr_t OFF_POS_Z_SECONDARY   = 0x1FC;
+
+        // Stats & Collectibles Offsets in der Spieler-Entity
+        static constexpr uintptr_t OFF_HEALTH            = 0x184; // 32-bit Integer (Health)
+        static constexpr uintptr_t OFF_MAX_HEALTH        = 0x188; // 32-bit Integer (Max Health)
+        static constexpr uintptr_t OFF_COINS             = 0x18C; // 32-bit Integer (Coins/Money)
+        static constexpr uintptr_t OFF_MANGO_AMMO        = 0x190; // 32-bit Integer (Fruit/Mango Ammo)
+        static constexpr uintptr_t OFF_PAW_TOKENS        = 0x194; // 32-bit Integer (Paw/Tiki Tokens)
 
         // Globale Engine-Adressen
         static constexpr uintptr_t OFFSET_PAUSED         = 0x0022A520;
         static constexpr uintptr_t OFFSET_CAM_PITCH      = 0x002181FC;
         static constexpr uintptr_t OFFSET_CAM_YAW        = 0x00218220;
-        static constexpr uintptr_t OFFSET_PHYSICS_OPCODE = 0x00028E9C; // fstp dword ptr [ebp+1F8h] (6 Bytes)
 
         static MemoryManager& Instance();
+        static MemoryManager& Get() { return Instance(); }
 
         bool Initialize();
         void Shutdown();
@@ -35,15 +46,28 @@ namespace MadMultiplayer {
         // Liest den aktuellen Spielerzustand thread-sicher und SEH-abgesichert aus
         bool ReadLocalPlayer(PlayerTransform& outTransform);
 
-        // Schreibt neue Koordinaten in die Spieler-Entity
-        bool WriteLocalPosition(float x, float y, float z);
+        // Schreibt neue Koordinaten in die Spieler-Entity (bulletproof, keine spekulativen Physics-Writes)
+        bool SetPlayerPosition(float x, float y, float z);
+        bool WriteLocalPosition(float x, float y, float z) { return SetPlayerPosition(x, y, z); }
 
-        // NOP-Patch für Physik-Overwrite (0x00428E9C) aktivieren / deaktivieren
-        bool SetPhysicsPatch(bool enable);
-        bool IsPhysicsPatched() const { return m_physicsPatched; }
+        // Health & Stats Manipulation
+        bool ReadHealth(int32_t& outHealth);
+        bool WriteHealth(int32_t health);
+        bool ReadCoins(int32_t& outCoins);
+        bool WriteCoins(int32_t coins);
+        bool ReadMangoAmmo(int32_t& outAmmo);
+        bool WriteMangoAmmo(int32_t ammo);
+        bool ReadPawTokens(int32_t& outTokens);
+        bool WritePawTokens(int32_t tokens);
+
+        // Generische SEH-geschützte Speicherzugriffe
+        bool SafeReadBytes(uintptr_t address, void* buffer, size_t size);
+        bool SafeWriteBytes(uintptr_t address, const void* buffer, size_t size);
+        static bool IsValidUserPointer(uintptr_t ptr);
 
         uintptr_t GetModuleBase() const { return m_moduleBase; }
         uintptr_t GetPlayerEntity() const { return m_playerEntity; }
+        bool EnsurePlayerEntity();
 
     private:
         MemoryManager() = default;
@@ -52,12 +76,9 @@ namespace MadMultiplayer {
         uintptr_t m_moduleBase{ 0 };
         uintptr_t m_playerEntity{ 0 };
         bool      m_initialized{ false };
-        bool      m_physicsPatched{ false };
-        uint8_t   m_origPhysicsBytes[6]{ 0xD9, 0x9D, 0xF8, 0x01, 0x00, 0x00 };
 
         // Interne SEH-sichere Pointer-Auflösung
         bool ResolvePlayerEntityInternal(uintptr_t& outEntity);
-        static bool IsValidUserPointer(uintptr_t ptr);
     };
 
 } // namespace MadMultiplayer

@@ -5,7 +5,7 @@
 [![Build](https://img.shields.io/badge/Build-CMake%20%7C%20MSVC%20Win32-orange.svg)](https://github.com)
 [![License](https://img.shields.io/badge/License-MIT-lightgrey.svg)](LICENSE)
 
-A native 2-player multiplayer and modernization mod for **Madagascar (2005) PC** (*Game.exe*, RenderWare 3.7 / DirectX 8.1).
+A native 2-player multiplayer and modernization mod for **Madagascar (2005) PC** (_Game.exe_, RenderWare 3.7 / DirectX 8.1).
 
 This project injects a custom C++ runtime (`MadMultiplayer.dll`) into the game process to enable synchronized multiplayer gameplay, in-game Dear ImGui menus, 16:9 borderless widescreen, camera culling fixes, and memory inspection.
 
@@ -67,30 +67,50 @@ MadagascarMultiplayer/
 
 ---
 
-## 🛠️ Prerequisites
+## 🛠️ Prerequisites & Automatic Setup
 
-To build the mod from source, you need:
+### ⚡ Option A: Automatisches Setup (Empfohlen)
+
+Um CMake und alle Python-Entwicklungswerkzeuge automatisch einzurichten, führe einfach aus:
+
+```bat
+.\install_requirements.bat
+```
+
+_Oder installiere die Python-Abhängigkeiten direkt via pip:_
+
+```bash
+pip install -r requirements.txt
+```
+
+### 📋 Option B: Manuelle Voraussetzungen
+
+Falls du die Tools manuell installieren möchtest:
+
 1. **Windows 10 or 11 (64-bit)**
-2. **Visual Studio 2022** (Community or Build Tools)
-   - Workload: *Desktop development with C++*
-   - Component: *MSVC v143 - VS 2022 C++ x64/x86 build tools*
-3. **CMake 3.20 or newer** (added to system `PATH`)
-4. **Python 3.10+** (optional, for running the relay server and validation scripts)
+2. **Visual Studio 2019 oder 2022** (Community oder Build Tools)
+   - Workload: _Desktop development with C++_
+   - Component: _MSVC C++ x64/x86 build tools_
+3. **CMake 3.20 oder neuer** (kann über `pip install -r requirements.txt` oder `winget install Kitware.CMake` installiert werden)
+4. **Python 3.10+** (für Server, Tester und Memory-Validator)
 
 > [!NOTE]
-> You **do not** need the legacy DirectX 8 / 9 SDK installed. All necessary DirectX 8 interfaces and GUIDs are self-contained in `client/vendor/d3d8/d3d8_minimal.h`.
+> Das DirectX 8 / 9 SDK wird **nicht** benötigt. Alle Schnittstellen sind autark in `client/vendor/d3d8/d3d8_minimal.h` enthalten.
 
 ---
 
 ## 🔨 Building
 
 ### Option 1: One-Click Build Script
+
 Double-click `build.bat` in the root folder, or run in PowerShell/CMD:
+
 ```bat
 .\build.bat
 ```
 
 ### Option 2: Command Line (CMake)
+
 ```powershell
 # 1. Configure the build directory for 32-bit x86
 cmake -B build -A Win32
@@ -100,6 +120,7 @@ cmake --build build --config Release
 ```
 
 The resulting binaries will be placed in:
+
 - `build/client/Release/MadMultiplayer.dll` (Multiplayer Mod DLL)
 - `build/loader/Release/d3d8.dll` (Proxy Loader)
 
@@ -125,37 +146,39 @@ The resulting binaries will be placed in:
 
 ## ⌨️ Controls & Keybinds
 
-| Key | Function | Description |
-|:---:|:---|:---|
-| **F3** | **Toggle Overlay** | Shows or hides the ImGui multiplayer menu |
-| **F2** | **Toggle Mouse Mode** | Frees mouse cursor for UI interaction or locks it for gameplay |
-| **9** | **16:9 Widescreen** | Toggles between original 4:3 800x600 and borderless 16:9 widescreen |
+|  Key   | Function              | Description                                                         |
+| :----: | :-------------------- | :------------------------------------------------------------------ |
+| **F3** | **Toggle Overlay**    | Shows or hides the ImGui multiplayer menu                           |
+| **F2** | **Toggle Mouse Mode** | Frees mouse cursor for UI interaction or locks it for gameplay      |
+| **9**  | **16:9 Widescreen**   | Toggles between original 4:3 800x600 and borderless 16:9 widescreen |
 
-*Keybinds can be customized in `patches/multiplayer_config.ini` using Win32 virtual-key codes.*
+_Keybinds can be customized in `patches/multiplayer_config.ini` using Win32 virtual-key codes._
 
 ---
 
 ## 🌐 Running the Relay Server
 
 To host a multiplayer game session:
+
 ```powershell
 python server/relay_server.py --port 27015
 ```
+
 Players can then open the in-game overlay (`F3`) and connect to the host's IP and port.
 
 ---
 
 ## 📜 Memory Offsets (`Game.exe` Base `0x00400000`)
 
-| Entity / Structure | Address / Offset | Description |
-|---|---|---|
-| `Player 1 Pointer` | `0x0062AC18` / `0x00609D80` | Current active character object |
-| `Position X, Y, Z` | `+0x44`, `+0x48`, `+0x4C` | IEEE-754 32-bit floats |
-| `Yaw Rotation` | `+0x58` | Character facing angle |
-| `Health` | `+0x184` | 32-bit integer |
-| `RwCamera` | `RwGlobals + 0x00` | Active RenderWare camera |
-| `viewWindow.x/y` | `Camera + 0x68 / 0x6C` | Frustum view window coordinates |
-| `_rwCameraSetFrustum` | `Camera + 0x10` | RenderWare frustum recalculation function |
+| Entity / Structure    | Address / Offset            | Description                               |
+| --------------------- | --------------------------- | ----------------------------------------- |
+| `Player 1 Pointer`    | `0x0062AC18` / `0x00609D80` | Current active character object           |
+| `Position X, Y, Z`    | `+0x44`, `+0x48`, `+0x4C`   | IEEE-754 32-bit floats                    |
+| `Yaw Rotation`        | `+0x58`                     | Character facing angle                    |
+| `Health`              | `+0x184`                    | 32-bit integer                            |
+| `RwCamera`            | `RwGlobals + 0x00`          | Active RenderWare camera                  |
+| `viewWindow.x/y`      | `Camera + 0x68 / 0x6C`      | Frustum view window coordinates           |
+| `_rwCameraSetFrustum` | `Camera + 0x10`             | RenderWare frustum recalculation function |
 
 Detailed reverse-engineering notes are documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 

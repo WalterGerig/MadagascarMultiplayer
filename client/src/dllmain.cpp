@@ -130,7 +130,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         if (MadMultiplayer::Config::Instance().Get().enableFileLogging) {
             MadMultiplayer::Logger::Instance().Initialize();
         }
-        MAD_LOG("[DllMain] DLL_PROCESS_ATTACH -> MadMultiplayer.dll geladen.");
+
+        MAD_LOG("[DllMain] DLL_PROCESS_ATTACH -> MadMultiplayer.dll [0.6.5-MERGED-ALL-FEATURES] geladen.");
         MAD_LOG("[DllMain] Config initialisiert: %s", MadMultiplayer::Config::Instance().GetIniPath().c_str());
 
         SetupDebugConsole();

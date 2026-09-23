@@ -2,6 +2,174 @@
 
 Alle Änderungen an der Codebase, Offsets, Hook-Logik, Netzwerk-Protokollen und Toolchain werden hier lückenlos dokumentiert.
 
+## [0.6.5-FEATURE-AND-CODEBASE-MERGE] - 2026-09-23 18:15
+### Betroffene Dateien & Module
+- `client/CMakeLists.txt` [MODIFY]
+- `client/include/CheatManager.h` [NEW]
+- `client/src/CheatManager.cpp` [NEW]
+- `client/include/Config.h` & `client/src/Config.cpp` [MODIFY]
+- `client/include/MemoryManager.h` & `client/src/MemoryManager.cpp` [MODIFY]
+- `client/include/D3D8Hook.h` & `client/src/D3D8Hook.cpp` [MODIFY]
+- `client/src/dllmain.cpp` [MODIFY]
+- `client/src/Logger.cpp` [MODIFY]
+- `loader/*` (`launcher.cpp`, `loader.cpp`, `proxy_d3d8.cpp`, `proxy_winmm.cpp`, `core_dllmain.cpp`, etc.) [NEW]
+- `build.bat`, `deploy.bat`, `install_requirements.bat`, `CMakeLists.txt` [MODIFY / NEW]
+- `docs/CHANGELOG.md` [MODIFY]
+
+### Genaue Beschreibung der Änderung
+1. **Lückenlose Integration des Cheat- und Sandbox-Subsystems (`CheatManager`):**
+   - Hinzufügen von `CheatManager.h` und `CheatManager.cpp` mit Flugmodus (Noclip), God Mode, unendlichem Sprung, Geschwindigkeitsmultiplikatoren, Münz-/Mango-/Pfotentoken-Refill.
+   - Einbindung des "Cheats & Sandbox" Tabs in das ImGui-Overlay (`RenderOverlayUI`).
+   - Erweiterung von `Config.h` / `Config.cpp` zur Speicherung und Initialisierung von Flugtasten, Geschwindigkeiten und Standardzuständen.
+   - Erweiterung von `MemoryManager` um bulletproof Health-, Münz-, Mango- und Token-Leser/Schreiber (`SetPlayerPosition`, `ReadHealth`, `WriteHealth`, etc.) mit SEH-Schutz und Speicherprüfungen.
+
+2. **D3D8 Device State Preservation & Strict Frame Gate:**
+   - Einführung von `D3D8StateBackup` (`SaveD3D8State` / `RestoreD3D8State`) in `D3D8Hook`, um Render-States, Texture-Stage-States, Shader, Vertex-Streams, Indices und Viewports vor und nach dem ImGui-Rendern exakt zu sichern und wiederherzustellen.
+   - Hook von VTable Slot 15 (`Present`) mit `Hooked_Present` und `OnPresent` für frame-genaue Delta-Time-Berechnung und ImGui-Rendern strikt 1x pro Present-Frame.
+
+3. **Vollständiger Erhalt aller Deep-Engine-Fixes:**
+   - 16:9 Hor+ Widescreen FOV (`Hooked_SetTransform`).
+   - RwCamera Frustum Culling Fix via Inline-Hook auf `RwCameraBeginUpdate` (`0x004D70F0`).
+   - 2D UI Render-Dispatch Hook (`0x0060B0B8` / `0x004FEFB0` mit `0x004E2640` Fallback).
+   - In-Game Software-Mauszeiger NOP-Deaktivierung (`0x00462FF4` & `0x004636D1`).
+   - 1:1 Menü-Mauskollisions-Mapping und `Hooked_GetCursorPos` IAT-Hook.
+   - Cutscene-Letterbox-Unterdrückung in `Process2DVertices` und `Hooked_DrawPrimitiveUP`.
+
+4. **Eigenständiges Loader-Subsystem (`loader/`):**
+   - Integration des d3d8.dll / winmm.dll Proxy-Loaders sowie des `MadLauncher` Tools.
+   - Aktualisierung von Root-`CMakeLists.txt`, `build.bat` und `deploy.bat` für nahtloses Multi-Target-Building und Deployment.
+
+---
+
+## [0.6.4-PHASE3-CAMERA-FRUSTUM-2D-DISPATCH-OVERHAUL] - 2026-09-23 18:00
+### Betroffene Dateien & Module
+- `client/src/D3D8Hook.cpp` [MODIFY]
+- `client/include/D3D8Hook.h` [MODIFY]
+- `client/src/dllmain.cpp` [MODIFY]
+- `docs/CHANGELOG.md` [MODIFY]
+
+### Genaue Beschreibung der Änderung
+1. **Behebung des CPU-seitigen Object Frustum Cullings an den Bildschirmrändern:**
+   - Ursache analysiert: RenderWare 3.7 verwirft 3D-Objekte (`RpClump` / `RpAtomic`) an den horizontalen Rändern, wenn sie außerhalb des Kamera-Frustums (`camera->viewWindow.x`) liegen. Da `curCamera` bei `OnEndScene()` nach dem Rendern stets `NULL` ist (`RwCameraEndUpdate` setzt `RwGlobals.curCamera = 0`), griff die bisherige Frustum-Aktualisierung ins Leere.
+   - Lösung: Detour / Inline-Hook auf `RwCameraBeginUpdate` (`0x004D70F0`).
+   - Vor jedem Render-Pass fängt der Hook die aktive 3D-Weltkamera (`projectionType == 1`) ab und synchronisiert `camera->viewWindow.x = camera->viewWindow.y * targetAspect` sowie `camera->recipViewWindow.x = 1.0f / targetViewWindowX`.
+   - Ruft `camera->setFrustum` (`+0x10` = `0x004D5B60`) auf, wodurch RenderWare intern alle 6 CPU-Culling-Ebenen exakt für das 16:9-Widescreen-Sichtfeld neu berechnet.
+   - Beseitigt Objekt-Pop-In und vorzeitiges Verschwinden von Spielwelt-Objekten (Geländer, Ballons, Bäume, Tiere) an den Bildschirmrändern vollständig.
+
+2. **2D UI Element-Resolution Fix (0x004E2640 Fallback):**
+   - Ursache für fehlende UI-Verschiebung behoben: RenderWare speichert das aktuelle 2D-Element nicht immer in `0x00632038`. Wenn `[0x00632038]` NULL ist, ruft die Engine intern `0x004E2640` auf, um den aktuellen 2D-Element-Kontext zu laden.
+   - `Hooked_Render2DQuads` bindet `0x004E2640` nun als Fallback ein, sodass `origElemX` und `origElemY` (`elem->0x1C` und `elem->0x1E`) zuverlässig für jedes HUD-Element ermittelt werden.
+   - Dadurch greift das dynamische 3-Zonen-Anchoring für alle HUD-Elemente (Marty links, Alex-Statue rechts) und geparkte Offscreen-Assets (`origElemX >= 790`) werden bedingungslos verworfen.
+
+---
+
+## [0.6.3-PHASE3-UI-DIRECT-DISPATCH-MOUSE-OVERHAUL] - 2026-09-23 17:30
+### Betroffene Dateien & Module
+- `client/src/D3D8Hook.cpp` [MODIFY]
+- `client/include/D3D8Hook.h` [MODIFY]
+- `client/src/dllmain.cpp` [MODIFY]
+- `docs/CHANGELOG.md` [MODIFY]
+
+### Genaue Beschreibung der Änderung
+1. **RenderWare 2D UI Pipeline Dispatch Hook (Tabelle 0x0060B080 / 0x0060B0B8):**
+   - Ursache für fehlendes UI-Anchoring aufgedeckt: RenderWare 3.7 schreibt Vertizes in einen dynamischen `D3DUSAGE_WRITEONLY` VertexBuffer (`0x0062D7F8`), wodurch `pVB->Lock(..., D3DLOCK_READONLY)` in `Hooked_DrawPrimitive` mit `D3DERR_INVALIDCALL` fehlschlug.
+   - Lösung: Hook der internen RenderWare 2D-Quad-Dispatch-Funktion (`0x004FEFB0`) über Funktionstabelle `0x0060B080` (Slot `+0x38` = `0x0060B0B8`).
+   - Fängt alle HUD-Elemente, Schriftzüge und Icons direkt an der Quelle vor der GPU-Pufferung ab.
+   - Ermittelt `elem = *(0x00632038)->0x60` mit den originalen Bildschirmkoordinaten (`elem->0x1c` = X, `elem->0x1e` = Y).
+   - Führt dynamisches 3-Zonen-Anchoring und Vertex-Skalierung durch und stellt nach dem Rendern die ursprünglichen Element-Offsets wieder her (verhindert Driften/Akkumulieren).
+   - Verwirft zuverlässig geparkte Offscreen-Assets (`elemX >= 790 || elemX <= -5`, z. B. brauner Ballon am rechten Rand).
+
+2. **Vollständige Eliminierung des In-Game Software-Mauszeigers:**
+   - Exakte Reverse-Engineering-Identifikation der Render-Calls des Software-Sprite-Cursors in `Game.exe`:
+     * `0x00462FF4` (9 Bytes: `push eax; call 0x413f90; add esp, 4`)
+     * `0x004636D1` (9 Bytes: `push edx; call 0x413f90; add esp, 4`)
+   - Beide Aufrufe werden zur Laufzeit via `VirtualProtect` und `0x90` (NOP) vollständig deaktiviert.
+   - Der In-Game Software-Mauszeiger ist damit restlos unsichtbar.
+   - Der echte Windows PC-Mauszeiger bleibt über F2 toggelbar und sichtbar.
+
+3. **1:1 Maus-Klick- und Hover-Synchronisation im Menü:**
+   - Menü-Buttons und UI-Hitboxen (`0x00463640`) berechnen Maus-Kollision im 640x480-Raum aus Fensterkoordinaten (`lParam` in `WM_LBUTTONDOWN` / `WM_MOUSEMOVE`).
+   - `HandleGameWndProc` und `Hooked_GetCursorPos` mappen die physischen Bildschirmkoordinaten stetig auf das 4:3-Zentrum zurück, sodass Klicks und Hover-Effekte exakt mit den optisch zentrierten Menü-Buttons übereinstimmen.
+
+---
+
+## [0.6.2-PHASE3-FINAL-HUD-ANCHORING] - 2026-09-23 17:00
+### Betroffene Dateien & Module
+- `client/src/D3D8Hook.cpp` [MODIFY]
+- `docs/CHANGELOG.md` [MODIFY]
+
+### Genaue Beschreibung der Änderung
+1. **Parked Elements Culling (Offscreen-Asset Drop):**
+   - Prüfung auf 2D-Quads, deren Vertizes im originalen Koordinatenraum vollständig bei $X \ge 790.0\text{f}$ oder $X \le -5.0\text{f}$ liegen (`minX >= 790.0f || maxX <= -5.0f`).
+   - Verwirft diese Draw-Calls bedingungslos (`outDrop = true; return true;` -> Rückgabe von `D3D_OK`).
+   - Verhindert zuverlässig, dass von der Engine außerhalb des 4:3-Sichtfelds geparkte Assets (wie der braune Ballon/Kreis am rechten Rand) im 16:9-Widescreen sichtbar werden.
+2. **Drei-Zonen HUD-Anchoring (Rand- und Mittenverankerung):**
+   - Exakte Schwellenwert-Kalibrierung basierend auf `origCenterX = (minX + maxX) * 0.5f`:
+     - **Zone Links** (`origCenterX < 320.0f`): Gesundheitsanzeige, Pfotenzähler, Charakter-Kopf kleben am linken Bildschirmrand ($X' = X \cdot \text{scaleX}$, $Y' = Y \cdot \text{scaleY}$).
+     - **Zone Rechts** (`origCenterX > 520.0f`): Alex-Löwenstatue ("51/100"), Münzanzeigen, Sammelobjekte kleben am rechten Bildschirmrand ($X' = \text{screenWidth} - (800.0\text{f} - X) \cdot \text{scaleX}$, $Y' = Y \cdot \text{scaleY}$).
+     - **Zone Mitte** ($320.0\text{f} \le \text{origCenterX} \le 520.0\text{f}$): Missions-Banner ("FANG 4 BLAUE FISCHE!"), Zielkreise und Prompts bleiben perfekt in der Bildschirmmitte zentriert ($X' = \text{centerOffsetX} + X \cdot \text{scaleX}$, $Y' = Y \cdot \text{scaleY}$).
+3. **Beibehaltung bewährter Meilensteine:**
+   - Cutscene-Letterbox-Balken bleiben restlos unterdrückt.
+   - Pause-Menü-Mauskollision bleibt 1:1 exakt synchronisiert.
+   - Vollbild-Post-Processing (Atmosphäre/Sky-Tint) spannt nahtlos über den gesamten Bildschirm.
+
+---
+
+## [0.6.1-PHASE3-DYNAMIC-HUD-ANCHORING] - 2026-09-22 23:00
+### Betroffene Dateien & Module
+- `client/src/D3D8Hook.cpp` [MODIFY]
+- `client/include/D3D8Hook.h` [MODIFY]
+- `client/vendor/d3d8/d3d8_minimal.h` [MODIFY]
+- `docs/CHANGELOG.md` [MODIFY]
+
+### Genaue Beschreibung der Änderung
+1. **Strikt eingegrenzter Vollbild-Filter (Kategorie A):**
+   - Vollbild-Post-Processing-Quads (Sky-Tint / Dunst / Pause-Dimming) werden nun strikt nur dann auf den 16:9-Bildschirm gestreckt, wenn die Bounding-Box das gesamte 800x600-Canvas gleichzeitig abdeckt: `minX <= 10.0f && maxX >= 790.0f && minY <= 10.0f && maxY >= 590.0f && (vCount == 4 || vCount == 6)`.
+   - Schließt Missions- und Ziel-Banner ("GELANG NACH OBEN", `maxY < 500.0f`) verlässlich aus, wodurch diese nicht mehr fälschlicherweise auf 100% Bildschirmbreite aufgeblasen werden.
+2. **Cutscene-Animationsfilter & Einblitz-Schutz (Kategorie B):**
+   - Dynamisches Abfangen von Letterbox-Balken während des Einblend-Tweenings (Höhe 0px bis 100px) durch Überprüfung auf `minX <= 25.0f && maxX >= 750.0f`, `minY <= 2.0f && maxY <= 180.0f` (oben) bzw. `minY >= 420.0f && maxY >= 598.0f` (unten) und diffuse RGB-Farbe $\le 5$.
+   - Bedingungsloses Verwerfen (`outDrop = true`) eliminiert das Frame-Einblitz-Flackern beim Start von Zwischensequenzen vollständig.
+3. **Dynamisches Widescreen-HUD Anchoring (Kategorie C):**
+   - Uniforme Skalierung basierend auf der Bildschirmhöhe: `scaleY = currentScreenHeight / 600.0f; scaleX = scaleY;`. Verhindert die "Gießkannen-Verzerrung" (HUD-Icons und Anzeigen bleiben exakt kreisrund).
+   - Horizontale 3-Zonen-Verankerung über `centerX = (minX + maxX) * 0.5f`:
+     - **Linkes HUD** (`centerX < 300.0f`): Verankert am linken Monitorrand (`Vertex.x = OrigX * scaleX`).
+     - **Rechtes HUD** (`centerX > 500.0f`): Verankert am echten rechten Monitorrand (`Vertex.x = screenWidth - (800 - OrigX) * scaleX`).
+     - **Zentriertes HUD / Banner** (`300.0f <= centerX <= 500.0f`): Verankert mittig im Pillarbox-Zentrum (`Vertex.x = centerOffsetX + OrigX * scaleX`).
+4. **Maus-Synchronisation in 3-Zonen-Layout:**
+   - `Hooked_GetCursorPos` rechnet Maus-Klicks stetig über die drei Verankerungszonen (Links, Mitte, Rechts) auf die native 800x600-Basis zurück, sodass Menü-Buttons und UI-Elemente in allen Bildschirmbereichen pixelgenau getroffen werden.
+
+---
+
+## [0.6.0-PHASE3-DEEP-ENGINE-FIXES] - 2026-09-22 21:40
+### Betroffene Dateien & Module
+- `client/src/D3D8Hook.cpp` [MODIFY]
+- `client/include/D3D8Hook.h` [MODIFY]
+- `client/src/Logger.cpp` [MODIFY]
+- `client/src/dllmain.cpp` [MODIFY]
+- `client/vendor/d3d8/d3d8_minimal.h` [MODIFY]
+- `client/vendor/imgui/imgui_impl_dx8.cpp` [MODIFY]
+
+### Genaue Beschreibung der Änderung
+1. **Fullscreen Post-Processing / Color Tint Quad Stretch:**
+   - Erkennung von Vollbild-Tint-Quads (Bounding-Box $X \in [0, 800]$, $Y \in [0, 600]$) in `Process2DVertices()`.
+   - Automatischer Stretch auf die volle 16:9 Auflösung (`Vertex.x = (Vertex.x / 800) * screenWidth`, `Vertex.y = (Vertex.y / 600) * screenHeight`).
+   - Dunkelblauer/grauer 4:3-Kasten oben links ist vollständig eliminiert, atmosphärischer Tint bedeckt nun den gesamten 16:9-Bildschirm.
+2. **Ortho-Projection Matrix Scaling:**
+   - In `Hooked_SetTransform(D3DTS_PROJECTION)`: Erkennung von Ortho-Projektionsmatrizen (`_44 == 1.0f`). Skalierung von `_11` und `_22` auf die tatsächliche Bildschirmauflösung.
+3. **Parked HUD Alex-Statue (Offscreen Rect Clipping):**
+   - Striktes Verwerfen aller 2D-HUD-Primitiven (`D3DFVF_XYZRHW`), deren originale Koordinaten $\min(X) \ge 795.0f$, $\max(X) \le -5.0f$, $\min(Y) \ge 595.0f$ oder $\max(Y) \le -5.0f$ betragen.
+   - Die am rechten Rand geparkte Löwenstatue wird im 16:9-Widescreen-Modus nicht mehr gerendert.
+4. **Asymmetrische Cutscene-Balken behoben:**
+   - Universal Black-Quad Filter Logik auf `DrawPrimitive`, `DrawIndexedPrimitive`, `DrawPrimitiveUP` und `DrawIndexedPrimitiveUP`.
+   - Nahezu schwarze Quads ($R < 15, G < 15, B < 15$) an $Y \le 180$ oder $Y \ge 420$ mit Breite $\ge 350$ werden zuverlässig verworfen (`return D3D_OK`). Oberer und unterer Balken sind restlos beseitigt.
+5. **RenderWare CPU-Side Frustum Culling Fix:**
+   - Synchronisierung des `curCamera->viewWindow.x` Frustums (`viewWindow.y * targetAspect`) direkt in `Hooked_SetTransform(D3DTS_PROJECTION)` VOR den 3D-Draw-Calls sowie in `OnEndScene`.
+   - Aufruf von `_rwCameraSetFrustum (+0x10)`. Kein Pop-In oder Flackern von Objekten an den linken und rechten Bildrändern.
+6. **High-Performance Thread-Safe File Logger:**
+   - Sofortige synchrone Initialisierung in `DLL_PROCESS_ATTACH`.
+   - Logging mit Microsecond-Timestamps und dedizierten Channels: `[D3D8:DRAW2D]`, `[RW:CAMERA]`, `[UI:CLIP]`, `[D3D8:ORTHO]`.
+   - Synchrones `FlushFileBuffers()` für jeden einzelnen Log-Eintrag.
+
 ---
 
 ## [0.1.0-INIT] - 2026-09-22 17:00

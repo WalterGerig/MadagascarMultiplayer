@@ -39,23 +39,57 @@ namespace MadMultiplayer {
         std::lock_guard<std::mutex> lock(m_mutex);
         if (m_initialized) return;
 
-        char path[MAX_PATH];
-        GetModuleFileNameA(nullptr, path, MAX_PATH);
-        char* slash = nullptr;
-        for (char* p = path; *p; ++p) if (*p == '\\') slash = p;
-        if (slash) slash[1] = '\0';
-        lstrcatA(path, "multiplayer_debug.log");
+        char path[MAX_PATH] = { 0 };
+        HMODULE hMod = nullptr;
+        // 1. Prioritaet: Ordner von MadMultiplayer.dll (normalerweise patches\)
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               reinterpret_cast<LPCSTR>(&Logger::Instance), &hMod) && hMod) {
+            GetModuleFileNameA(hMod, path, MAX_PATH);
+            char* slash = strrchr(path, '\\');
+            if (slash) *(slash + 1) = '\0';
+            strcat_s(path, sizeof(path), "multiplayer_debug.log");
+            m_hFile = CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        }
 
-        // Vorherige Logdatei überschreiben für frische Session
-        m_hFile = CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        // 2. Prioritaet: Ordner der Game.exe
+        if (m_hFile == INVALID_HANDLE_VALUE) {
+            GetModuleFileNameA(nullptr, path, MAX_PATH);
+            char* slash = strrchr(path, '\\');
+            if (slash) *(slash + 1) = '\0';
+            strcat_s(path, sizeof(path), "multiplayer_debug.log");
+            m_hFile = CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        }
+
+        // 3. Prioritaet: VirtualStore Ordner fuer Non-Admin UAC Umgebungen
+        if (m_hFile == INVALID_HANDLE_VALUE) {
+            char localAppData[MAX_PATH] = { 0 };
+            if (GetEnvironmentVariableA("LOCALAPPDATA", localAppData, MAX_PATH) > 0) {
+                sprintf_s(path, sizeof(path), "%s\\VirtualStore\\Program Files (x86)\\Activision\\Madagascar\\Game\\patches\\multiplayer_debug.log", localAppData);
+                m_hFile = CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+            }
+        }
+
+        // 4. Prioritaet: %TEMP% Fallback
+        if (m_hFile == INVALID_HANDLE_VALUE) {
+            char tempDir[MAX_PATH] = { 0 };
+            if (GetTempPathA(MAX_PATH, tempDir) > 0) {
+                sprintf_s(path, sizeof(path), "%smultiplayer_debug.log", tempDir);
+                m_hFile = CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+            }
+        }
+
         m_initialized = (m_hFile != INVALID_HANDLE_VALUE);
 
         if (m_initialized) {
-            const char* header = "==================================================================\r\n"
-                                 " MADAGASCAR MULTIPLAYER DEBUG LOG\r\n"
-                                 "==================================================================\r\n";
+            char header[512];
+            sprintf_s(header, sizeof(header),
+                      "==================================================================\r\n"
+                      " MADAGASCAR MULTIPLAYER DEBUG LOG (SESSION INITIALIZED)\r\n"
+                      " File: %s\r\n"
+                      "==================================================================\r\n", path);
             DWORD written = 0;
             WriteFile(m_hFile, header, (DWORD)strlen(header), &written, nullptr);
+            FlushFileBuffers(m_hFile);
         }
     }
 
@@ -89,7 +123,11 @@ namespace MadMultiplayer {
         DWORD tid = GetCurrentThreadId();
 
         char formatted[1200];
-        sprintf_s(formatted, "[%s] [TID:%04lu] %s", ts.c_str(), tid, cleanBody.c_str());
+        if (!cleanBody.empty() && cleanBody[0] == '[') {
+            sprintf_s(formatted, "[%s] [TID:%04lu] %s", ts.c_str(), tid, cleanBody.c_str());
+        } else {
+            sprintf_s(formatted, "[%s] [TID:%04lu] [SYS] %s", ts.c_str(), tid, cleanBody.c_str());
+        }
 
         // 1. In Konsole schreiben
         printf("%s\n", formatted);

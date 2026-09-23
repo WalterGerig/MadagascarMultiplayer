@@ -21,6 +21,7 @@ set(SOURCES
     src/dllmain.cpp
     src/MemoryManager.cpp
     src/D3D8Hook.cpp
+    src/CheatManager.cpp
     src/Logger.cpp
     src/Config.cpp
 
@@ -40,6 +41,7 @@ set(HEADERS
     include/PlayerTransform.h
     include/NetworkProtocol.h
     include/D3D8Hook.h
+    include/CheatManager.h
     include/Logger.h
     include/Config.h
 

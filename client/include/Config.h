@@ -12,6 +12,13 @@ namespace MadMultiplayer {
         int         defaultPort{ 27015 };
         int         autoEnableWidescreen{ 0 };
         int         enableFileLogging{ 1 };
+
+        // Cheats & Sandbox
+        int         keyToggleFlight{ 78 };           // Taste N (VK_N = 78 / 0x4E)
+        float       defaultFlightSpeed{ 1.0f };
+        int         enableGodModeDefault{ 0 };
+        int         enableInfiniteJumpDefault{ 0 };
+        float       defaultMoveSpeedMultiplier{ 1.0f };
     };
 
     class Config {

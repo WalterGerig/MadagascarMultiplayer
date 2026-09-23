@@ -1,4 +1,4 @@
-#include "MemoryManager.h"
+#include "../include/MemoryManager.h"
 #include <cstdio>
 #include <cstring>
 
@@ -35,6 +35,46 @@ namespace MadMultiplayer {
         }
     }
 
+    static bool SafeReadInt32(uintptr_t address, int32_t& outValue) {
+        __try {
+            outValue = *reinterpret_cast<const volatile int32_t*>(address);
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+    }
+
+    static bool SafeWriteInt32(uintptr_t address, int32_t value) {
+        __try {
+            *reinterpret_cast<volatile int32_t*>(address) = value;
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+    }
+
+    static bool SafeReadBytesRaw(uintptr_t address, void* buffer, size_t size) {
+        __try {
+            std::memcpy(buffer, reinterpret_cast<const void*>(address), size);
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+    }
+
+    static bool SafeWriteBytesRaw(uintptr_t address, const void* buffer, size_t size) {
+        __try {
+            std::memcpy(reinterpret_cast<void*>(address), buffer, size);
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+    }
+
     MemoryManager& MemoryManager::Instance() {
         static MemoryManager instance;
         return instance;
@@ -60,30 +100,12 @@ namespace MadMultiplayer {
 
         printf("[MadMultiplayer::Memory] Initialisiert. Modul-Basisadresse: 0x%08X\n", (unsigned int)m_moduleBase);
 
-        // Original-Bytes der Physik-Instruktion sichern
-        uintptr_t physAddr = m_moduleBase + OFFSET_PHYSICS_OPCODE;
-        __try {
-            std::memcpy(m_origPhysicsBytes, reinterpret_cast<const void*>(physAddr), sizeof(m_origPhysicsBytes));
-            printf("[MadMultiplayer::Memory] Physik-Instruktion @ 0x%08X gesichert (%02X %02X %02X %02X %02X %02X)\n",
-                   (unsigned int)physAddr,
-                   m_origPhysicsBytes[0], m_origPhysicsBytes[1], m_origPhysicsBytes[2],
-                   m_origPhysicsBytes[3], m_origPhysicsBytes[4], m_origPhysicsBytes[5]);
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) {
-            printf("[MadMultiplayer::Memory] WARNUNG: Konnte Physik-Instruktion nicht lesen (SEH Exception)!\n");
-        }
-
         m_initialized = true;
         return true;
     }
 
     void MemoryManager::Shutdown() {
         if (!m_initialized) return;
-
-        // Physik-Patch zurücksetzen falls aktiv
-        if (m_physicsPatched) {
-            SetPhysicsPatch(false);
-        }
 
         m_initialized = false;
         m_playerEntity = 0;
@@ -157,49 +179,93 @@ namespace MadMultiplayer {
         return true;
     }
 
-    bool MemoryManager::WriteLocalPosition(float x, float y, float z) {
-        if (!m_playerEntity || !IsValidUserPointer(m_playerEntity)) {
+    bool MemoryManager::SetPlayerPosition(float x, float y, float z) {
+        if (!m_playerEntity) {
+            if (!EnsurePlayerEntity() || !m_playerEntity) {
+                return false;
+            }
+        }
+
+        // Bulletproof Validation auf primaere Koordinaten (+0x150)
+        if (IsBadWritePtr(reinterpret_cast<void*>(m_playerEntity + OFF_POS_X), sizeof(float) * 3)) {
             return false;
         }
 
-        bool success = true;
-        // In primäre und sekundäre Offsets schreiben für vollständige Konsistenz
-        success &= SafeWriteFloat(m_playerEntity + OFF_POS_X_PRIMARY, x);
-        success &= SafeWriteFloat(m_playerEntity + OFF_POS_Y_PRIMARY, y);
-        success &= SafeWriteFloat(m_playerEntity + OFF_POS_Z_PRIMARY, z);
+        *reinterpret_cast<float*>(m_playerEntity + OFF_POS_X) = x;
+        *reinterpret_cast<float*>(m_playerEntity + OFF_POS_Y) = y;
+        *reinterpret_cast<float*>(m_playerEntity + OFF_POS_Z) = z;
 
-        SafeWriteFloat(m_playerEntity + OFF_POS_X_SECONDARY, x);
-        SafeWriteFloat(m_playerEntity + OFF_POS_Y_SECONDARY, y);
-        SafeWriteFloat(m_playerEntity + OFF_POS_Z_SECONDARY, z);
+        // Sekundaere Koordinaten (+0x1F4) aktualisieren, falls zugaenglich
+        if (!IsBadWritePtr(reinterpret_cast<void*>(m_playerEntity + OFF_POS_X_SECONDARY), sizeof(float) * 3)) {
+            *reinterpret_cast<float*>(m_playerEntity + OFF_POS_X_SECONDARY) = x;
+            *reinterpret_cast<float*>(m_playerEntity + OFF_POS_Y_SECONDARY) = y;
+            *reinterpret_cast<float*>(m_playerEntity + OFF_POS_Z_SECONDARY) = z;
+        }
 
-        return success;
+        return true;
     }
 
-    bool MemoryManager::SetPhysicsPatch(bool enable) {
+    bool MemoryManager::EnsurePlayerEntity() {
         if (!m_initialized) return false;
-
-        uintptr_t physAddr = m_moduleBase + OFFSET_PHYSICS_OPCODE;
-        DWORD oldProtect = 0;
-
-        if (!VirtualProtect(reinterpret_cast<void*>(physAddr), sizeof(m_origPhysicsBytes), PAGE_EXECUTE_READWRITE, &oldProtect)) {
-            printf("[MadMultiplayer::Memory] VirtualProtect fehlgeschlagen! Error: %lu\n", GetLastError());
-            return false;
+        uintptr_t entity = 0;
+        if (ResolvePlayerEntityInternal(entity) && IsValidUserPointer(entity)) {
+            m_playerEntity = entity;
+            return true;
         }
+        m_playerEntity = 0;
+        return false;
+    }
 
-        if (enable) {
-            uint8_t nops[6] = { 0x90, 0x90, 0x90, 0x90, 0x90, 0x90 };
-            std::memcpy(reinterpret_cast<void*>(physAddr), nops, sizeof(nops));
-            m_physicsPatched = true;
-            printf("[MadMultiplayer::Memory] Physik-Overwrite @ 0x%08X mit NOPs aktiviert.\n", (unsigned int)physAddr);
-        } else {
-            std::memcpy(reinterpret_cast<void*>(physAddr), m_origPhysicsBytes, sizeof(m_origPhysicsBytes));
-            m_physicsPatched = false;
-            printf("[MadMultiplayer::Memory] Physik-Overwrite @ 0x%08X wiederhergestellt.\n", (unsigned int)physAddr);
-        }
+    bool MemoryManager::ReadHealth(int32_t& outHealth) {
+        if (!EnsurePlayerEntity()) return false;
+        return SafeReadInt32(m_playerEntity + OFF_HEALTH, outHealth);
+    }
 
-        VirtualProtect(reinterpret_cast<void*>(physAddr), sizeof(m_origPhysicsBytes), oldProtect, &oldProtect);
-        FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<void*>(physAddr), sizeof(m_origPhysicsBytes));
-        return true;
+    bool MemoryManager::WriteHealth(int32_t health) {
+        if (!EnsurePlayerEntity()) return false;
+        bool ok = SafeWriteInt32(m_playerEntity + OFF_HEALTH, health);
+        SafeWriteInt32(m_playerEntity + OFF_MAX_HEALTH, (health > 100) ? health : 100);
+        return ok;
+    }
+
+    bool MemoryManager::ReadCoins(int32_t& outCoins) {
+        if (!EnsurePlayerEntity()) return false;
+        return SafeReadInt32(m_playerEntity + OFF_COINS, outCoins);
+    }
+
+    bool MemoryManager::WriteCoins(int32_t coins) {
+        if (!EnsurePlayerEntity()) return false;
+        return SafeWriteInt32(m_playerEntity + OFF_COINS, coins);
+    }
+
+    bool MemoryManager::ReadMangoAmmo(int32_t& outAmmo) {
+        if (!EnsurePlayerEntity()) return false;
+        return SafeReadInt32(m_playerEntity + OFF_MANGO_AMMO, outAmmo);
+    }
+
+    bool MemoryManager::WriteMangoAmmo(int32_t ammo) {
+        if (!EnsurePlayerEntity()) return false;
+        return SafeWriteInt32(m_playerEntity + OFF_MANGO_AMMO, ammo);
+    }
+
+    bool MemoryManager::ReadPawTokens(int32_t& outTokens) {
+        if (!EnsurePlayerEntity()) return false;
+        return SafeReadInt32(m_playerEntity + OFF_PAW_TOKENS, outTokens);
+    }
+
+    bool MemoryManager::WritePawTokens(int32_t tokens) {
+        if (!EnsurePlayerEntity()) return false;
+        return SafeWriteInt32(m_playerEntity + OFF_PAW_TOKENS, tokens);
+    }
+
+    bool MemoryManager::SafeReadBytes(uintptr_t address, void* buffer, size_t size) {
+        if (!address || !buffer || !IsValidUserPointer(address)) return false;
+        return SafeReadBytesRaw(address, buffer, size);
+    }
+
+    bool MemoryManager::SafeWriteBytes(uintptr_t address, const void* buffer, size_t size) {
+        if (!address || !buffer || !IsValidUserPointer(address)) return false;
+        return SafeWriteBytesRaw(address, buffer, size);
     }
 
 } // namespace MadMultiplayer
