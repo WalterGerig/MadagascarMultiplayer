@@ -109,6 +109,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 
         // Dedicated Win32 Debug-Konsole bedingungslos ganz am Anfang initialisieren
         MadMultiplayer::Logger::InitConsole();
+        MadMultiplayer::Logger::Instance().Init();
 
         // 1. Config System initialisieren
         MadMultiplayer::Config::Instance().Initialize(hModule);

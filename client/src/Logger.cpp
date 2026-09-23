@@ -61,6 +61,11 @@ namespace MadMultiplayer {
         }
     }
 
+    void Logger::Init() {
+        InitConsole();
+        Initialize();
+    }
+
     void Logger::Initialize() {
         InitConsole();
         std::lock_guard<std::mutex> lock(m_mutex);

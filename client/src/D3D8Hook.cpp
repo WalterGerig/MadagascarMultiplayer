@@ -43,6 +43,8 @@ namespace MadMultiplayer {
     }
 
     static bool g_bRenderedThisFrame = false;
+    static DWORD s_dwStateBlock = 0;
+    static bool s_bStateBlockCreated = false;
 
     void D3D8Hook::SaveD3D8State(IDirect3DDevice8* pDevice, D3D8StateBackup& b) {
         if (!pDevice) return;
@@ -503,15 +505,13 @@ namespace MadMultiplayer {
         if (!vtable) return false;
 
         PFN_Reset targetReset = reinterpret_cast<PFN_Reset>(vtable[14]);
-        PFN_Present targetPresent = reinterpret_cast<PFN_Present>(vtable[15]);
         PFN_EndScene targetEndScene = reinterpret_cast<PFN_EndScene>(vtable[35]);
 
-        if (targetPresent == Hooked_Present || targetEndScene == Hooked_EndScene) {
+        if (targetEndScene == Hooked_EndScene) {
             return true;
         }
 
         m_pOriginalReset = targetReset;
-        m_pOriginalPresent = targetPresent;
         m_pOriginalEndScene = targetEndScene;
 
         DWORD oldProtect = 0;
@@ -522,7 +522,6 @@ namespace MadMultiplayer {
         }
 
         vtable[14] = reinterpret_cast<void*>(&Hooked_Reset);
-        vtable[15] = reinterpret_cast<void*>(&Hooked_Present);
         vtable[35] = reinterpret_cast<void*>(&Hooked_EndScene);
 
         VirtualProtect(&vtable[14], sizeof(void*) * 22, oldProtect, &oldProtect);
@@ -544,7 +543,7 @@ namespace MadMultiplayer {
 
         m_initialized.store(true);
         MAD_LOG("[D3D8Hook] DIRECT MEMORY HOOK SUCCESS: D3D8 Device at 0x%p hooked!", (void*)m_pDevice);
-        MAD_LOG("[D3D8Hook] Minimal VTable Swapped: Reset(14), Present(15), EndScene(35)");
+        MAD_LOG("[D3D8Hook] Minimal VTable Swapped: Reset(14), EndScene(35)");
         return true;
     }
 
@@ -683,6 +682,12 @@ namespace MadMultiplayer {
             s_pOriginalGetCursorPos = nullptr;
         }
 
+        if (s_bStateBlockCreated && s_dwStateBlock != 0 && m_pDevice) {
+            m_pDevice->DeleteStateBlock(s_dwStateBlock);
+            s_dwStateBlock = 0;
+            s_bStateBlockCreated = false;
+        }
+
         m_initialized.store(false);
         MAD_LOG("[D3D8Hook] Subsystem beendet.");
     }
@@ -736,79 +741,39 @@ namespace MadMultiplayer {
     }
 
     void D3D8Hook::OnEndScene(IDirect3DDevice8* pDevice) {
-        m_pDevice = pDevice;
         if (!pDevice) return;
+        m_pDevice = pDevice;
 
-        EnsureImGuiInitialized(pDevice);
-
-        if (!m_imguiInitialized.load() || !g_bOverlayVisible || g_bRenderedThisFrame) {
-            return;
-        }
-
-        // Sicherstellen, dass das aktuelle RenderTarget der echte BackBuffer ist (keine Shadow-Maps/Texturen)
+        // 1. Verify that the current render target is the actual BackBuffer
         IDirect3DSurface8* pRenderTarget = nullptr;
         IDirect3DSurface8* pBackBuffer = nullptr;
-        bool isBackBuffer = true;
+        bool bIsBackBuffer = false;
+
         if (SUCCEEDED(pDevice->GetRenderTarget(&pRenderTarget)) && pRenderTarget) {
             if (SUCCEEDED(pDevice->GetBackBuffer(0, D3DBACKBUFFER_TYPE_MONO, &pBackBuffer)) && pBackBuffer) {
-                isBackBuffer = (pRenderTarget == pBackBuffer);
+                if (pRenderTarget == pBackBuffer) {
+                    bIsBackBuffer = true;
+                }
                 pBackBuffer->Release();
             }
             pRenderTarget->Release();
         }
-        if (!isBackBuffer) {
+
+        // If RenderWare is rendering a shadow map, reflection pass, or offscreen texture,
+        // NEVER touch states or draw ImGui! Pass through immediately:
+        if (!bIsBackBuffer) {
             return;
         }
 
-        // Backbuffer-Dimensionen fuer ImGui DisplaySize ermitteln
-        D3DSURFACE_DESC backBufferDesc{};
-        if (SUCCEEDED(pDevice->GetBackBuffer(0, D3DBACKBUFFER_TYPE_MONO, &pBackBuffer)) && pBackBuffer) {
-            if (SUCCEEDED(pBackBuffer->GetDesc(&backBufferDesc))) {
-                if (backBufferDesc.Width > 0 && backBufferDesc.Height > 0) {
-                    ImGui::GetIO().DisplaySize = ImVec2((float)backBufferDesc.Width, (float)backBufferDesc.Height);
-                }
-            }
-            pBackBuffer->Release();
+        // 2. Initialize ImGui once on the backbuffer thread if not already done
+        EnsureImGuiInitialized(pDevice);
+        if (!m_imguiInitialized.load()) {
+            return;
         }
 
-        D3D8StateBackup backup{};
-        SaveD3D8State(pDevice, backup);
-
-        ImGui_ImplDX8_NewFrame();
-        ImGui_ImplWin32_NewFrame();
-        ImGui::NewFrame();
-
-        RenderOverlayUI();
-
-        ImGui::EndFrame();
-        ImGui::Render();
-
-        // 3. SAFE VIEWPORT HANDLING IN Hooked_EndScene:
-        // Do NOT unconditionally overwrite viewports during startup or loading screens.
-        // Only save and restore the viewport if originalViewport.Width > 0 && originalViewport.Height > 0:
-        D3DVIEWPORT8 origVp;
-        if (SUCCEEDED(pDevice->GetViewport(&origVp)) && origVp.Width > 0 && origVp.Height > 0) {
-            D3DVIEWPORT8 imguiVp = origVp;
-            imguiVp.X = 0;
-            imguiVp.Y = 0;
-            pDevice->SetViewport(&imguiVp);
-
-            ImGui_ImplDX8_RenderDrawData(ImGui::GetDrawData());
-
-            pDevice->SetViewport(&origVp);
-        } else {
-            ImGui_ImplDX8_RenderDrawData(ImGui::GetDrawData());
-        }
-
-        RestoreD3D8State(pDevice, backup);
-        g_bRenderedThisFrame = true;
-    }
-
-    void D3D8Hook::OnPresent(IDirect3DDevice8* pDevice) {
-        m_pDevice = pDevice;
+        // 3. Per-frame game updates (now run on backbuffer pass since Present is not hooked)
         uint64_t frame = ++m_frameCount;
 
-        // 1. DeltaTime Berechnung für sanfte Bewegung & Cheats
         if (m_perfFreq.QuadPart == 0) {
             QueryPerformanceFrequency(&m_perfFreq);
             QueryPerformanceCounter(&m_lastFrameTime);
@@ -822,16 +787,16 @@ namespace MadMultiplayer {
             m_lastDeltaTime = 0.0166f;
         }
 
-        // 2. Hotkeys flankengesteuert verarbeiten
+        // Process Hotkeys (F2, F3, Taste 9)
         ProcessHotkeys();
 
-        // 3. RenderWare Kamera-Frustum kontinuierlich auf Widescreen halten
+        // Update Widescreen Frustum
         UpdateRenderWareCameraFrustum();
 
-        // 4. In-Game Cheat Manager pro Frame aktualisieren
+        // Update Cheats & Flight
         CheatManager::Instance().Update(m_lastDeltaTime);
 
-        // 5. Maus-Zustand kontinuierlich überwachen (Pause-Menü vs. 3D-Gameplay vs. F2-UI)
+        // Update Mouse Capture
         static bool s_lastPaused = false;
         bool isMenuOrPaused = m_mouseInputMode.load();
         if (m_pTransformStore) {
@@ -848,13 +813,71 @@ namespace MadMultiplayer {
             ::ClipCursor(nullptr);
         }
 
-        // 6. Sicherstellen, dass ImGui und WndProc verknuepft sind
-        EnsureImGuiInitialized(pDevice);
+        // 4. Render ImGui Overlay if visible
+        if (g_bOverlayVisible)
+        {
+            // Capture ALL D3D8 states via StateBlock before ImGui touches anything
+            if (!s_bStateBlockCreated) {
+                if (SUCCEEDED(pDevice->CreateStateBlock(D3DSBT_ALL, &s_dwStateBlock))) {
+                    s_bStateBlockCreated = true;
+                }
+            }
+            if (s_bStateBlockCreated) {
+                pDevice->CaptureStateBlock(s_dwStateBlock);
+            }
+
+            // Enforce full BackBuffer viewport for ImGui
+            D3DVIEWPORT8 origVp;
+            bool bHasOrigVp = SUCCEEDED(pDevice->GetViewport(&origVp));
+
+            D3DSURFACE_DESC bbDesc;
+            if (SUCCEEDED(pDevice->GetBackBuffer(0, D3DBACKBUFFER_TYPE_MONO, &pBackBuffer)) && pBackBuffer) {
+                if (SUCCEEDED(pBackBuffer->GetDesc(&bbDesc))) {
+                    ImGui::GetIO().DisplaySize = ImVec2((float)bbDesc.Width, (float)bbDesc.Height);
+
+                    D3DVIEWPORT8 imguiVp;
+                    imguiVp.X = 0;
+                    imguiVp.Y = 0;
+                    imguiVp.Width = bbDesc.Width;
+                    imguiVp.Height = bbDesc.Height;
+                    imguiVp.MinZ = 0.0f;
+                    imguiVp.MaxZ = 1.0f;
+                    pDevice->SetViewport(&imguiVp);
+                }
+                pBackBuffer->Release();
+            }
+
+            // Render ImGui frame
+            ImGui_ImplDX8_NewFrame();
+            ImGui_ImplWin32_NewFrame();
+            ImGui::NewFrame();
+
+            RenderOverlayUI();
+
+            ImGui::EndFrame();
+            ImGui::Render();
+            ImGui_ImplDX8_RenderDrawData(ImGui::GetDrawData());
+
+            // Restore original viewport
+            if (bHasOrigVp) {
+                pDevice->SetViewport(&origVp);
+            }
+
+            // Restore ALL RenderWare D3D8 states
+            if (s_bStateBlockCreated) {
+                pDevice->ApplyStateBlock(s_dwStateBlock);
+            }
+        }
 
         m_frameRendered.store(true);
     }
 
     void D3D8Hook::OnPreReset(IDirect3DDevice8* pDevice) {
+        if (s_bStateBlockCreated && s_dwStateBlock != 0 && pDevice) {
+            pDevice->DeleteStateBlock(s_dwStateBlock);
+            s_dwStateBlock = 0;
+            s_bStateBlockCreated = false;
+        }
         if (m_imguiInitialized.load()) {
             MAD_LOG("[D3D8Hook] InvalidateDeviceObjects VOR Reset...");
             ImGui_ImplDX8_InvalidateDeviceObjects();
@@ -1154,15 +1177,8 @@ namespace MadMultiplayer {
         return CallWindowProcA(m_pOriginalConsoleWndProc, hWnd, uMsg, wParam, lParam);
     }
 
-    HRESULT STDMETHODCALLTYPE D3D8Hook::Hooked_Present(IDirect3DDevice8* pDevice, CONST RECT* pSourceRect, CONST RECT* pDestRect, HWND hDestWindowOverride, CONST RGNDATA* pDirtyRegion) {
-        g_bRenderedThisFrame = false; // Reset frame gate each visual frame
-        auto& hook = D3D8Hook::Instance();
-        hook.m_frameRendered.store(false);
-        hook.OnPresent(pDevice);
-        return hook.m_pOriginalPresent ? hook.m_pOriginalPresent(pDevice, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion) : D3D_OK;
-    }
-
     HRESULT STDMETHODCALLTYPE D3D8Hook::Hooked_EndScene(IDirect3DDevice8* pDevice) {
+        if (!pDevice) return D3DERR_INVALIDCALL;
         auto& hook = D3D8Hook::Instance();
         hook.OnEndScene(pDevice);
         return hook.m_pOriginalEndScene ? hook.m_pOriginalEndScene(pDevice) : D3D_OK;

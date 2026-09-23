@@ -26,7 +26,6 @@ namespace MadMultiplayer {
         void OnDeviceCreated(IDirect3DDevice8* pDevice, HWND hGameWindow);
 
         // VTable Callback Handlers
-        void OnPresent(IDirect3DDevice8* pDevice);
         void OnEndScene(IDirect3DDevice8* pDevice);
         void OnPreReset(IDirect3DDevice8* pDevice);
         void OnPostReset(IDirect3DDevice8* pDevice);
@@ -112,11 +111,9 @@ namespace MadMultiplayer {
         void UnlockMouseCursor();
 
         using PFN_Reset   = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice8*, D3DPRESENT_PARAMETERS*);
-        using PFN_Present = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice8*, CONST RECT*, CONST RECT*, HWND, CONST RGNDATA*);
         using PFN_EndScene = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice8*);
 
         PFN_Reset   m_pOriginalReset{ nullptr };
-        PFN_Present m_pOriginalPresent{ nullptr };
         PFN_EndScene m_pOriginalEndScene{ nullptr };
 
         IDirect3DDevice8* m_pDevice{ nullptr };
@@ -154,9 +151,8 @@ namespace MadMultiplayer {
         char m_playerName[32]{ "Player 1" };
         bool m_isConnected{ false };
 
-        // Statische Hooks für Minimal-VTable (Reset, Present, EndScene) & WndProc
+        // Statische Hooks für Minimal-VTable (Reset, EndScene) & WndProc
         static HRESULT STDMETHODCALLTYPE Hooked_Reset(IDirect3DDevice8* pDevice, D3DPRESENT_PARAMETERS* pPresentationParameters);
-        static HRESULT STDMETHODCALLTYPE Hooked_Present(IDirect3DDevice8* pDevice, CONST RECT* pSourceRect, CONST RECT* pDestRect, HWND hDestWindowOverride, CONST RGNDATA* pDirtyRegion);
         static HRESULT STDMETHODCALLTYPE Hooked_EndScene(IDirect3DDevice8* pDevice);
 
         static LRESULT CALLBACK Hooked_GameWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
