@@ -195,13 +195,6 @@ namespace MadMultiplayer {
         *reinterpret_cast<float*>(m_playerEntity + OFF_POS_Y) = y;
         *reinterpret_cast<float*>(m_playerEntity + OFF_POS_Z) = z;
 
-        // Sekundaere Koordinaten (+0x1F4) aktualisieren, falls zugaenglich
-        if (!IsBadWritePtr(reinterpret_cast<void*>(m_playerEntity + OFF_POS_X_SECONDARY), sizeof(float) * 3)) {
-            *reinterpret_cast<float*>(m_playerEntity + OFF_POS_X_SECONDARY) = x;
-            *reinterpret_cast<float*>(m_playerEntity + OFF_POS_Y_SECONDARY) = y;
-            *reinterpret_cast<float*>(m_playerEntity + OFF_POS_Z_SECONDARY) = z;
-        }
-
         return true;
     }
 

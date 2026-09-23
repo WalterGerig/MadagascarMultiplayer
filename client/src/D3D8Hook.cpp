@@ -1,7 +1,7 @@
-#include "D3D8Hook.h"
-#include "Logger.h"
-#include "Config.h"
-#include "CheatManager.h"
+#include "../include/D3D8Hook.h"
+#include "../include/Logger.h"
+#include "../include/Config.h"
+#include "../include/CheatManager.h"
 #include <cstdio>
 #include <cstring>
 #include <cmath>
@@ -1158,21 +1158,6 @@ namespace MadMultiplayer {
             UnlockMouseCursor();
         }
 
-        // 7. ImGui Message Handler mit ORIGINALEN PHYSISCHEN Koordinaten bedienen
-        if (m_imguiInitialized.load()) {
-            ImGui_ImplWin32_WndProcHandler(hWnd, uMsg, wParam, lParam);
-
-            // Wenn ImGui sichtbar ist und die Maus aktiv beansprucht: Events fuer ImGui abfangen
-            if (m_showOverlay.load()) {
-                ImGuiIO& io = ImGui::GetIO();
-                if (io.WantCaptureMouse && (uMsg >= WM_MOUSEFIRST && uMsg <= WM_MOUSELAST)) {
-                    return 1;
-                }
-                if (io.WantCaptureKeyboard && (uMsg >= WM_KEYFIRST && uMsg <= WM_KEYLAST)) {
-                    return 1;
-                }
-            }
-        }
 
         // 6. Maus-Koordinaten fuer Game.exe Menue-Hit-Testing (0x464510 / 0x463640) 1:1 anpassen
         if (m_isBorderless && m_screenWidth > 0 && m_screenHeight > 0) {

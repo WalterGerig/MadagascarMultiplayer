@@ -56,16 +56,13 @@ namespace MadMultiplayer {
         void LoadWaypoint(size_t slotIdx);
         void TeleportTo(float x, float y, float z);
 
-        // 3. Direct Memory Coin Freeze (0x03391DA8 + 0x1C)
+        // 3. Getter-Based Coin System (Hook @ 0x0043BCD8)
+        bool IsMaxCoinsCheatActive() const;
+        void SetMaxCoinsCheatActive(bool active);
+        void ToggleMaxCoinsCheat();
+        uintptr_t GetActiveCoinBase() const;
         void TriggerSet999Coins();
-        uintptr_t GetCoinBaseAddress() const { return m_dwCoinBaseAddress; }
-        void      SetCoinBaseAddress(uintptr_t addr) { m_dwCoinBaseAddress = addr; }
-        uintptr_t GetCoinOffset() const { return m_dwCoinOffset; }
-        void      SetCoinOffset(uintptr_t offset) { m_dwCoinOffset = offset; }
-        bool      IsCoinFreezeEnabled() const { return m_bFreezeCoins; }
-        void      SetCoinFreezeEnabled(bool enabled) { m_bFreezeCoins = enabled; }
-        int       GetTargetCoins() const { return m_nTargetCoins; }
-        void      SetTargetCoins(int target) { m_nTargetCoins = target; }
+        void TriggerAdd100Coins();
 
         // 4. God Mode & Modifiers
         bool IsGodModeEnabled() const { return m_godModeEnabled; }
@@ -105,11 +102,9 @@ namespace MadMultiplayer {
         int   m_selectedPreset{ 0 };
         std::array<WaypointSlot, 3> m_waypoints{};
 
-        // Direct Memory Coin Freeze
-        uintptr_t m_dwCoinBaseAddress{ 0x03391DA8 }; // Default from Cheat Engine
-        uintptr_t m_dwCoinOffset{ 0x1C };
-        bool      m_bFreezeCoins{ false };
-        int       m_nTargetCoins{ 999 };
+        // Getter-Based Coin System (0x0043BCD8)
+        void InstallCoinGetterHook();
+        void UninstallCoinGetterHook();
 
         // God Mode & Player Modifiers
         bool  m_godModeEnabled{ false };
@@ -126,5 +121,10 @@ namespace MadMultiplayer {
         void ProcessFlightMovement(float deltaTime, const PlayerTransform& cur);
         void ProcessPlayerModifiers(float deltaTime, const PlayerTransform& cur);
     };
+
+    // Globale Variablen fuer den 0x0043BCD8 Getter-Hook
+    extern uintptr_t g_pActiveCoinBase;
+    extern bool      g_bMaxCoinsCheatActive;
+    extern bool      g_bCoinHookInstalled;
 
 } // namespace MadMultiplayer
