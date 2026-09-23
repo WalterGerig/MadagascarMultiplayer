@@ -56,13 +56,13 @@ namespace MadMultiplayer {
         void LoadWaypoint(size_t slotIdx);
         void TeleportTo(float x, float y, float z);
 
-        // 3. Getter-Based Coin System (Hook @ 0x0043BCD8)
-        bool IsMaxCoinsCheatActive() const;
-        void SetMaxCoinsCheatActive(bool active);
-        void ToggleMaxCoinsCheat();
-        uintptr_t GetActiveCoinBase() const;
-        void TriggerSet999Coins();
-        void TriggerAdd100Coins();
+        // 3. Authoritative Static Coin Pointer Chain (Game.exe + 0x00229628 -> 0x0C -> 0x1C -> 0x534)
+        uintptr_t GetCoinAddress();
+        bool      SetCoins(int amount);
+        bool      IsCoinFreezeEnabled() const { return m_bFreezeCoins; }
+        void      SetCoinFreezeEnabled(bool enabled) { m_bFreezeCoins = enabled; }
+        int       GetTargetCoins() const { return m_nTargetCoins; }
+        void      SetTargetCoins(int target) { m_nTargetCoins = target; }
 
         // 4. God Mode & Modifiers
         bool IsGodModeEnabled() const { return m_godModeEnabled; }
@@ -102,9 +102,9 @@ namespace MadMultiplayer {
         int   m_selectedPreset{ 0 };
         std::array<WaypointSlot, 3> m_waypoints{};
 
-        // Getter-Based Coin System (0x0043BCD8)
-        void InstallCoinGetterHook();
-        void UninstallCoinGetterHook();
+        // Authoritative Coin Pointer & Freeze
+        bool m_bFreezeCoins{ false };
+        int  m_nTargetCoins{ 999 };
 
         // God Mode & Player Modifiers
         bool  m_godModeEnabled{ false };
@@ -121,10 +121,5 @@ namespace MadMultiplayer {
         void ProcessFlightMovement(float deltaTime, const PlayerTransform& cur);
         void ProcessPlayerModifiers(float deltaTime, const PlayerTransform& cur);
     };
-
-    // Globale Variablen fuer den 0x0043BCD8 Getter-Hook
-    extern uintptr_t g_pActiveCoinBase;
-    extern bool      g_bMaxCoinsCheatActive;
-    extern bool      g_bCoinHookInstalled;
 
 } // namespace MadMultiplayer

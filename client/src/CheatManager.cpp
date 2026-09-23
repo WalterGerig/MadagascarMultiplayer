@@ -12,43 +12,8 @@
 namespace MadMultiplayer {
 
     // -------------------------------------------------------------------------
-    // COIN GETTER DETOUR HOOK AT 0x0043BCD8 (7 BYTES)
-    //
-    // 0043BCD8 - 8B 46 1C - mov eax, [esi+1C]   ; Read coins from player instance (+0x1C)
-    // 0043BCDB - 5E       - pop esi             ; Restore ESI
-    // 0043BCDC - C2 0400  - ret 0004            ; Return
-    //
-    // Wird >60x pro Sekunde von HUD, Souvenir-Shop & Level-Skripten aufgerufen.
-    // ESI ist garantiert der aktive Spieler-Container.
+    // LEVEL PRESETS
     // -------------------------------------------------------------------------
-    uintptr_t g_pActiveCoinBase = 0;
-    bool      g_bMaxCoinsCheatActive = false;
-    bool      g_bCoinHookInstalled = false;
-    static uintptr_t g_dwCoinHookAddress = 0;
-    static uint8_t   g_origCoinGetterBytes[7] = { 0x8B, 0x46, 0x1C, 0x5E, 0xC2, 0x04, 0x00 };
-
-    __declspec(naked) static void Hook_GetCoins() {
-        __asm {
-            // ESI enthaelt die garantierte Spieler-Instanz (Coin Container)
-            mov g_pActiveCoinBase, esi
-
-            // Originale Lese-Operation: mov eax, [esi+1C]
-            mov eax, [esi + 0x1C]
-
-            // Pruefe ob Force Max Coins Cheat aktiv ist
-            cmp byte ptr [g_bMaxCoinsCheatActive], 0
-            je done
-
-            // Wert im Speicher auf 999 fixieren und Rueckgabewert ueberschreiben
-            mov dword ptr [esi + 0x1C], 999
-            mov eax, 999
-
-        done:
-            // Originale Cleanup-Sequenz: pop esi; ret 0004
-            pop esi
-            ret 0x0004
-        }
-    }
 
     static const MapPreset g_mapPresets[] = {
         { "Central Park Zoo (Ursprung / Gehege)",   0.0f,   10.0f,    0.0f, 0.0f },
@@ -89,9 +54,6 @@ namespace MadMultiplayer {
             m_waypoints[i].timestamp[0] = '\0';
         }
 
-        // 7-Byte Detour Hook bei 0x0043BCD8 installieren
-        InstallCoinGetterHook();
-
         m_initialized = true;
         MAD_LOG("[CheatManager] Cheat Engine initialisiert (Flight Hotkey: F4, Speed: %.1f).", m_flightSpeed);
     }
@@ -99,87 +61,56 @@ namespace MadMultiplayer {
     void CheatManager::Shutdown() {
         if (!m_initialized) return;
         SetFlightEnabled(false);
-        UninstallCoinGetterHook();
         m_initialized = false;
         MAD_LOG("[CheatManager] Cheat Subsystem beendet.");
     }
 
-    void CheatManager::InstallCoinGetterHook() {
-        if (g_bCoinHookInstalled) return;
+    // -------------------------------------------------------------------------
+    // 1. AUTHORITATIVE STATIC COIN POINTER CHAIN
+    //
+    // Exact 3-Level Pointer Chain:
+    // Game.exe + 0x00229628 -> Level 1 (+0x0C) -> Level 2 (+0x1C) -> Target (+0x534)
+    //
+    // Authoritative wallet variable used by game logic and Souvenir Shop.
+    // 100% data-driven, ZERO opcode hooks, no cutscene freezes or softlocks.
+    // -------------------------------------------------------------------------
+    uintptr_t CheatManager::GetCoinAddress() {
+        uintptr_t hGameModule = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+        if (!hGameModule) return 0;
 
-        uintptr_t modBase = MemoryManager::Instance().GetModuleBase();
-        uintptr_t targetAddr = modBase ? (modBase + 0x0003BCD8) : 0x0043BCD8;
+        // Dereference Level 0 -> Level 1 (Game.exe + 0x00229628)
+        uintptr_t pBase = hGameModule + 0x00229628;
+        if (IsBadReadPtr(reinterpret_cast<void*>(pBase), sizeof(uintptr_t))) return 0;
+        uintptr_t pLevel1 = *reinterpret_cast<uintptr_t*>(pBase);
+        if (!pLevel1 || IsBadReadPtr(reinterpret_cast<void*>(pLevel1 + 0x0C), sizeof(uintptr_t))) return 0;
 
-        uint8_t curBytes[7] = {};
-        if (!MemoryManager::Instance().SafeReadBytes(targetAddr, curBytes, 7) || curBytes[0] != 0x8B) {
-            targetAddr = 0x0043BCD8;
-            MemoryManager::Instance().SafeReadBytes(targetAddr, curBytes, 7);
+        // Dereference Level 1 -> Level 2 (+0x0C)
+        uintptr_t pLevel2 = *reinterpret_cast<uintptr_t*>(pLevel1 + 0x0C);
+        if (!pLevel2 || IsBadReadPtr(reinterpret_cast<void*>(pLevel2 + 0x1C), sizeof(uintptr_t))) return 0;
+
+        // Dereference Level 2 -> Level 3 (+0x1C)
+        uintptr_t pLevel3 = *reinterpret_cast<uintptr_t*>(pLevel2 + 0x1C);
+        if (!pLevel3 || IsBadReadPtr(reinterpret_cast<void*>(pLevel3 + 0x534), sizeof(int32_t))) return 0;
+
+        // Final Target Address (+0x534)
+        uintptr_t finalCoinAddr = pLevel3 + 0x534;
+        return finalCoinAddr;
+    }
+
+    bool CheatManager::SetCoins(int amount) {
+        uintptr_t targetAddr = GetCoinAddress();
+        if (!targetAddr || IsBadWritePtr(reinterpret_cast<void*>(targetAddr), sizeof(int32_t))) {
+            MAD_LOG("[CheatManager] SetCoins failed: Invalid pointer target.");
+            return false;
         }
 
-        DWORD oldProtect = 0;
-        if (VirtualProtect(reinterpret_cast<void*>(targetAddr), 7, PAGE_EXECUTE_READWRITE, &oldProtect)) {
-            uint8_t patch[7] = { 0xE9, 0x00, 0x00, 0x00, 0x00, 0x90, 0x90 };
-            uintptr_t relOffset = reinterpret_cast<uintptr_t>(&Hook_GetCoins) - (targetAddr + 5);
-            std::memcpy(&patch[1], &relOffset, 4);
-            std::memcpy(reinterpret_cast<void*>(targetAddr), patch, 7);
-            VirtualProtect(reinterpret_cast<void*>(targetAddr), 7, oldProtect, &oldProtect);
-            FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<void*>(targetAddr), 7);
-            g_bCoinHookInstalled = true;
-            g_dwCoinHookAddress = targetAddr;
-            MAD_LOG("[CheatManager] 7-Byte Coin Getter Hook erfolgreich installiert @ 0x%08X", (unsigned int)targetAddr);
-        } else {
-            MAD_LOG("[CheatManager] FEHLER: VirtualProtect fuer Coin Getter Hook @ 0x%08X fehlgeschlagen!", (unsigned int)targetAddr);
-        }
-    }
+        *reinterpret_cast<int32_t*>(targetAddr) = amount;
 
-    void CheatManager::UninstallCoinGetterHook() {
-        if (!g_bCoinHookInstalled || !g_dwCoinHookAddress) return;
+        // Synchronisiere auch den MemoryManager-Spiegel falls verfuegbar
+        MemoryManager::Get().WriteCoins(amount);
 
-        DWORD oldProtect = 0;
-        if (VirtualProtect(reinterpret_cast<void*>(g_dwCoinHookAddress), 7, PAGE_EXECUTE_READWRITE, &oldProtect)) {
-            std::memcpy(reinterpret_cast<void*>(g_dwCoinHookAddress), g_origCoinGetterBytes, 7);
-            VirtualProtect(reinterpret_cast<void*>(g_dwCoinHookAddress), 7, oldProtect, &oldProtect);
-            FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<void*>(g_dwCoinHookAddress), 7);
-            g_bCoinHookInstalled = false;
-            MAD_LOG("[CheatManager] Coin Getter Hook deinstalliert @ 0x%08X", (unsigned int)g_dwCoinHookAddress);
-        }
-    }
-
-    bool CheatManager::IsMaxCoinsCheatActive() const {
-        return g_bMaxCoinsCheatActive;
-    }
-
-    void CheatManager::SetMaxCoinsCheatActive(bool active) {
-        g_bMaxCoinsCheatActive = active;
-        MAD_LOG("[CheatManager] Force Max Coins Cheat -> %s", active ? "AKTIV (999 Coins)" : "INAKTIV");
-    }
-
-    void CheatManager::ToggleMaxCoinsCheat() {
-        SetMaxCoinsCheatActive(!g_bMaxCoinsCheatActive);
-    }
-
-    uintptr_t CheatManager::GetActiveCoinBase() const {
-        return g_pActiveCoinBase;
-    }
-
-    void CheatManager::TriggerSet999Coins() {
-        if (g_pActiveCoinBase && !IsBadWritePtr(reinterpret_cast<void*>(g_pActiveCoinBase + 0x1C), sizeof(int32_t))) {
-            *reinterpret_cast<int32_t*>(g_pActiveCoinBase + 0x1C) = 999;
-        }
-        MemoryManager::Get().WriteCoins(999);
-        MAD_LOG("[CheatManager] Set 999 Coins angewendet auf 0x%08X.", (unsigned int)g_pActiveCoinBase);
-    }
-
-    void CheatManager::TriggerAdd100Coins() {
-        if (g_pActiveCoinBase && !IsBadWritePtr(reinterpret_cast<void*>(g_pActiveCoinBase + 0x1C), sizeof(int32_t))) {
-            *reinterpret_cast<int32_t*>(g_pActiveCoinBase + 0x1C) += 100;
-        } else {
-            int32_t cur = 0;
-            if (MemoryManager::Get().ReadCoins(cur)) {
-                MemoryManager::Get().WriteCoins(cur + 100);
-            }
-        }
-        MAD_LOG("[CheatManager] +100 Coins angewendet (Base: 0x%08X).", (unsigned int)g_pActiveCoinBase);
+        MAD_LOG("[CheatManager] Authoritative wallet balance set to %d at 0x%08X", amount, (unsigned int)targetAddr);
+        return true;
     }
 
     // -------------------------------------------------------------------------
@@ -382,10 +313,11 @@ namespace MadMultiplayer {
             deltaTime = 0.0166f;
         }
 
-        // Force Max Coins Cheat (Getter Hook fallback / continuous sync)
-        if (g_bMaxCoinsCheatActive && g_pActiveCoinBase) {
-            if (!IsBadWritePtr(reinterpret_cast<void*>(g_pActiveCoinBase + 0x1C), sizeof(int32_t))) {
-                *reinterpret_cast<int32_t*>(g_pActiveCoinBase + 0x1C) = 999;
+        // Freeze Coins at Target Value
+        if (m_bFreezeCoins) {
+            uintptr_t coinAddr = GetCoinAddress();
+            if (coinAddr && !IsBadWritePtr(reinterpret_cast<void*>(coinAddr), sizeof(int32_t))) {
+                *reinterpret_cast<int32_t*>(coinAddr) = m_nTargetCoins;
             }
         }
 
@@ -510,62 +442,59 @@ namespace MadMultiplayer {
         ImGui::Spacing();
 
         // ---------------------------------------------------------------------
-        // SECTION 3: INVENTORY & COINS (GETTER HOOK @ 0x0043BCD8)
+        // SECTION 3: INVENTORY & COINS (AUTHORITATIVE POINTER CHAIN)
         // ---------------------------------------------------------------------
         if (ImGui::CollapsingHeader("🪙  Inventory & Coins", ImGuiTreeNodeFlags_DefaultOpen)) {
-            ImGui::Text("Hook Status: ");
-            ImGui::SameLine();
-            if (g_bCoinHookInstalled) {
-                ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.4f, 1.0f), "[ACTIVE] 7-Byte Detour Hook @ 0x0043BCD8");
-            } else {
-                ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "[INACTIVE] Detour Hook Not Installed");
+            uintptr_t targetAddr = GetCoinAddress();
+            int32_t currentVal = 0;
+            bool isValid = (targetAddr != 0);
+            if (isValid) {
+                currentVal = *reinterpret_cast<int32_t*>(targetAddr);
             }
 
-            ImGui::Text("Active Coin Base: ");
+            ImGui::Text("Authoritative Wallet Pointer: ");
             ImGui::SameLine();
-            if (g_pActiveCoinBase) {
-                ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "0x%08X (Player Instance)", (unsigned int)g_pActiveCoinBase);
+            if (isValid) {
+                ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.4f, 1.0f), "0x%08X [CONNECTED]", (unsigned int)targetAddr);
+                ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.2f, 1.0f), "Current Authoritative Coins: %d (at 0x%08X)", currentVal, (unsigned int)targetAddr);
             } else {
-                ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "0x00000000 (Awaiting Getter Call...)");
-            }
-
-            int32_t currentCoins = 0;
-            bool canReadCoins = false;
-            if (g_pActiveCoinBase && !IsBadReadPtr(reinterpret_cast<void*>(g_pActiveCoinBase + 0x1C), sizeof(int32_t))) {
-                currentCoins = *reinterpret_cast<int32_t*>(g_pActiveCoinBase + 0x1C);
-                canReadCoins = true;
-            } else {
-                canReadCoins = MemoryManager::Get().ReadCoins(currentCoins);
-            }
-
-            ImGui::Text("Current Coin Count: ");
-            ImGui::SameLine();
-            if (canReadCoins) {
-                ImGui::TextColored(ImVec4(1.0f, 0.9f, 0.2f, 1.0f), "%d Coins", currentCoins);
-            } else {
-                ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "N/A");
+                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Coins Pointer: Waiting for player instance...");
             }
 
             ImGui::Separator();
 
-            bool maxCoins = g_bMaxCoinsCheatActive;
-            if (ImGui::Checkbox("Force Max Coins (999)", &maxCoins)) {
-                SetMaxCoinsCheatActive(maxCoins);
+            // Action Controls
+            if (ImGui::Button("+50 Coins", ImVec2(120, 26))) {
+                SetCoins(isValid ? (currentVal + 50) : 50);
             }
             ImGui::SameLine();
-            if (g_bMaxCoinsCheatActive) {
-                ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.4f, 1.0f), "[LOCKED @ 999]");
+            if (ImGui::Button("Set 100 Coins (Level Max)", ImVec2(185, 26))) {
+                SetCoins(100);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Set 999 Coins (Shop Wallet)", ImVec2(195, 26))) {
+                SetCoins(999);
             }
 
             ImGui::Spacing();
-            if (ImGui::Button("Set 999 Coins Now", ImVec2(180, 26))) {
-                TriggerSet999Coins();
-            }
+            ImGui::Checkbox("Freeze Coins at Value", &m_bFreezeCoins);
             ImGui::SameLine();
-            if (ImGui::Button("+100 Coins", ImVec2(140, 26))) {
-                TriggerAdd100Coins();
-            }
-            ImGui::TextDisabled("Getter routine intercepts 0x0043BCD8 (mov eax, [esi+1C]) called 60+ Hz by HUD & Shops.");
+            ImGui::SetNextItemWidth(120);
+            ImGui::InputInt("##TargetCoins", &m_nTargetCoins, 1, 100);
+
+            ImGui::Spacing();
+
+            // Framed Notice Text Box
+            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.3f, 0.6f, 0.9f, 0.6f));
+            ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 4.0f);
+            ImGui::BeginChild("CoinNoticeBox", ImVec2(0, 75), true);
+            ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "ℹ  Wichtiger Hinweis zur Münz-Synchronisation:");
+            ImGui::TextWrapped("Hinweis: Der HUD-Zähler im laufenden Level aktualisiert sich erst beim Einsammeln "
+                               "einer weiteren Münze, beim Levelwechsel oder direkt im Souvenir-Shop. "
+                               "Die Münzen sind im Spiel und im Shop sofort voll verfügbar und abrechenbar!");
+            ImGui::EndChild();
+            ImGui::PopStyleVar();
+            ImGui::PopStyleColor();
         }
 
         ImGui::Spacing();
