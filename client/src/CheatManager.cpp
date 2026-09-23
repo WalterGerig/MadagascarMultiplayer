@@ -74,37 +74,62 @@ namespace MadMultiplayer {
     // Authoritative wallet variable used by game logic and Souvenir Shop.
     // 100% data-driven, ZERO opcode hooks, no cutscene freezes or softlocks.
     // -------------------------------------------------------------------------
+    static bool SafeReadInt32SEH(uintptr_t addr, int32_t& outVal) {
+        if (!addr || IsBadReadPtr(reinterpret_cast<void*>(addr), sizeof(int32_t))) return false;
+        __try {
+            outVal = *reinterpret_cast<volatile int32_t*>(addr);
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+    }
+
+    static bool SafeWriteInt32SEH(uintptr_t addr, int32_t val) {
+        if (!addr || IsBadWritePtr(reinterpret_cast<void*>(addr), sizeof(int32_t))) return false;
+        __try {
+            *reinterpret_cast<volatile int32_t*>(addr) = val;
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+    }
+
     uintptr_t CheatManager::GetCoinAddress() {
-        uintptr_t hGameModule = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
-        if (!hGameModule) return 0;
+        __try {
+            uintptr_t hGameModule = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+            if (!hGameModule) return 0;
 
-        // Dereference Level 0 -> Level 1 (Game.exe + 0x00229628)
-        uintptr_t pBase = hGameModule + 0x00229628;
-        if (IsBadReadPtr(reinterpret_cast<void*>(pBase), sizeof(uintptr_t))) return 0;
-        uintptr_t pLevel1 = *reinterpret_cast<uintptr_t*>(pBase);
-        if (!pLevel1 || IsBadReadPtr(reinterpret_cast<void*>(pLevel1 + 0x0C), sizeof(uintptr_t))) return 0;
+            // Dereference Level 0 -> Level 1 (Game.exe + 0x00229628)
+            uintptr_t pBase = hGameModule + 0x00229628;
+            if (IsBadReadPtr(reinterpret_cast<void*>(pBase), sizeof(uintptr_t))) return 0;
+            uintptr_t pLevel1 = *reinterpret_cast<uintptr_t*>(pBase);
+            if (!pLevel1 || IsBadReadPtr(reinterpret_cast<void*>(pLevel1 + 0x0C), sizeof(uintptr_t))) return 0;
 
-        // Dereference Level 1 -> Level 2 (+0x0C)
-        uintptr_t pLevel2 = *reinterpret_cast<uintptr_t*>(pLevel1 + 0x0C);
-        if (!pLevel2 || IsBadReadPtr(reinterpret_cast<void*>(pLevel2 + 0x1C), sizeof(uintptr_t))) return 0;
+            // Dereference Level 1 -> Level 2 (+0x0C)
+            uintptr_t pLevel2 = *reinterpret_cast<uintptr_t*>(pLevel1 + 0x0C);
+            if (!pLevel2 || IsBadReadPtr(reinterpret_cast<void*>(pLevel2 + 0x1C), sizeof(uintptr_t))) return 0;
 
-        // Dereference Level 2 -> Level 3 (+0x1C)
-        uintptr_t pLevel3 = *reinterpret_cast<uintptr_t*>(pLevel2 + 0x1C);
-        if (!pLevel3 || IsBadReadPtr(reinterpret_cast<void*>(pLevel3 + 0x534), sizeof(int32_t))) return 0;
+            // Dereference Level 2 -> Level 3 (+0x1C)
+            uintptr_t pLevel3 = *reinterpret_cast<uintptr_t*>(pLevel2 + 0x1C);
+            if (!pLevel3 || IsBadReadPtr(reinterpret_cast<void*>(pLevel3 + 0x534), sizeof(int32_t))) return 0;
 
-        // Final Target Address (+0x534)
-        uintptr_t finalCoinAddr = pLevel3 + 0x534;
-        return finalCoinAddr;
+            // Final Target Address (+0x534)
+            uintptr_t finalCoinAddr = pLevel3 + 0x534;
+            return finalCoinAddr;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            return 0;
+        }
     }
 
     bool CheatManager::SetCoins(int amount) {
         uintptr_t targetAddr = GetCoinAddress();
-        if (!targetAddr || IsBadWritePtr(reinterpret_cast<void*>(targetAddr), sizeof(int32_t))) {
+        if (!targetAddr || !SafeWriteInt32SEH(targetAddr, amount)) {
             MAD_LOG("[CheatManager] SetCoins failed: Invalid pointer target.");
             return false;
         }
-
-        *reinterpret_cast<int32_t*>(targetAddr) = amount;
 
         // Synchronisiere auch den MemoryManager-Spiegel falls verfuegbar
         MemoryManager::Get().WriteCoins(amount);
@@ -316,8 +341,8 @@ namespace MadMultiplayer {
         // Freeze Coins at Target Value
         if (m_bFreezeCoins) {
             uintptr_t coinAddr = GetCoinAddress();
-            if (coinAddr && !IsBadWritePtr(reinterpret_cast<void*>(coinAddr), sizeof(int32_t))) {
-                *reinterpret_cast<int32_t*>(coinAddr) = m_nTargetCoins;
+            if (coinAddr) {
+                SafeWriteInt32SEH(coinAddr, m_nTargetCoins);
             }
         }
 
@@ -358,13 +383,21 @@ namespace MadMultiplayer {
     // 5. IMGUI UI LAYOUT ([ Cheats & Sandbox ])
     // -------------------------------------------------------------------------
     void CheatManager::RenderMenu() {
+        // Use a scrollable child window so content never overflows the screen bounds:
+        ImGui::BeginChild("CheatTabScrollRegion", ImVec2(0, 0), false, ImGuiWindowFlags_AlwaysVerticalScrollbar);
+
+        bool playerValid = MemoryManager::Get().IsPlayerValid();
         PlayerTransform pt{};
-        bool playerReady = MemoryManager::Get().ReadLocalPlayer(pt) && pt.isValid;
+        bool playerReady = playerValid && MemoryManager::Get().ReadLocalPlayer(pt) && pt.isValid;
 
         // ---------------------------------------------------------------------
         // SECTION 1: MOVEMENT & FLIGHT
         // ---------------------------------------------------------------------
         if (ImGui::CollapsingHeader("✈  Movement & Coordinate-Lock Flight", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (!playerValid) {
+                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "[!] Spieler-Entity nicht aktiv (Hauptmenue / Ladebildschirm)");
+            }
+
             bool flight = m_flightEnabled;
             if (ImGui::Checkbox("Enable Coordinate-Lock Flight (HotKey: F4)", &flight)) {
                 SetFlightEnabled(flight);
@@ -447,10 +480,7 @@ namespace MadMultiplayer {
         if (ImGui::CollapsingHeader("🪙  Inventory & Coins", ImGuiTreeNodeFlags_DefaultOpen)) {
             uintptr_t targetAddr = GetCoinAddress();
             int32_t currentVal = 0;
-            bool isValid = (targetAddr != 0);
-            if (isValid) {
-                currentVal = *reinterpret_cast<int32_t*>(targetAddr);
-            }
+            bool isValid = (targetAddr != 0) && SafeReadInt32SEH(targetAddr, currentVal);
 
             ImGui::Text("Authoritative Wallet Pointer: ");
             ImGui::SameLine();
@@ -528,6 +558,8 @@ namespace MadMultiplayer {
                 ApplyMaxPawTokens();
             }
         }
+
+        ImGui::EndChild(); // End CheatTabScrollRegion
     }
 
 } // namespace MadMultiplayer

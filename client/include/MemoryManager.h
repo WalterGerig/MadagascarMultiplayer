@@ -68,6 +68,7 @@ namespace MadMultiplayer {
         uintptr_t GetModuleBase() const { return m_moduleBase; }
         uintptr_t GetPlayerEntity() const { return m_playerEntity; }
         bool EnsurePlayerEntity();
+        bool IsPlayerValid() { return EnsurePlayerEntity() && m_playerEntity != 0; }
 
     private:
         MemoryManager() = default;

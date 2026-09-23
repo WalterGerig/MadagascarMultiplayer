@@ -82,6 +82,8 @@ void ImGui_ImplDX8_InvalidateDeviceObjects() {
         bd->FontTexture = nullptr;
         ImGui::GetIO().Fonts->SetTexID(0);
     }
+    bd->VertexBufferSize = 0;
+    bd->IndexBufferSize = 0;
 }
 
 bool ImGui_ImplDX8_Init(IDirect3DDevice8* device) {
@@ -127,37 +129,70 @@ void ImGui_ImplDX8_RenderDrawData(ImDrawData* draw_data) {
     ImGui_ImplDX8_Data* bd = ImGui_ImplDX8_GetBackendData();
     IDirect3DDevice8* dev = bd->pd3dDevice;
 
-    // Create or resize buffers if needed
+    // Create or resize buffers if needed (with dynamic and managed fallback)
     if (!bd->pVB || bd->VertexBufferSize < draw_data->TotalVtxCount) {
         if (bd->pVB) { bd->pVB->Release(); bd->pVB = nullptr; }
         bd->VertexBufferSize = draw_data->TotalVtxCount + 5000;
-        if (dev->CreateVertexBuffer(bd->VertexBufferSize * sizeof(CUSTOMVERTEX),
-                                    D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY,
-                                    D3DFVF_CUSTOMVERTEX,
-                                    D3DPOOL_DEFAULT,
-                                    &bd->pVB) < 0)
-            return;
+        HRESULT hr = dev->CreateVertexBuffer(bd->VertexBufferSize * sizeof(CUSTOMVERTEX),
+                                             D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY,
+                                             D3DFVF_CUSTOMVERTEX,
+                                             D3DPOOL_DEFAULT,
+                                             &bd->pVB);
+        if (FAILED(hr)) {
+            hr = dev->CreateVertexBuffer(bd->VertexBufferSize * sizeof(CUSTOMVERTEX),
+                                         D3DUSAGE_WRITEONLY,
+                                         D3DFVF_CUSTOMVERTEX,
+                                         D3DPOOL_MANAGED,
+                                         &bd->pVB);
+            if (FAILED(hr) || !bd->pVB) {
+                bd->pVB = nullptr;
+                return;
+            }
+        }
     }
 
     if (!bd->pIB || bd->IndexBufferSize < draw_data->TotalIdxCount) {
         if (bd->pIB) { bd->pIB->Release(); bd->pIB = nullptr; }
         bd->IndexBufferSize = draw_data->TotalIdxCount + 10000;
-        if (dev->CreateIndexBuffer(bd->IndexBufferSize * sizeof(ImDrawIdx),
-                                   D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY,
-                                   sizeof(ImDrawIdx) == 2 ? D3DFMT_INDEX16 : D3DFMT_INDEX32,
-                                   D3DPOOL_DEFAULT,
-                                   &bd->pIB) < 0)
+        D3DFORMAT fmt = (sizeof(ImDrawIdx) == 2 ? D3DFMT_INDEX16 : D3DFMT_INDEX32);
+        HRESULT hr = dev->CreateIndexBuffer(bd->IndexBufferSize * sizeof(ImDrawIdx),
+                                            D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY,
+                                            fmt,
+                                            D3DPOOL_DEFAULT,
+                                            &bd->pIB);
+        if (FAILED(hr)) {
+            hr = dev->CreateIndexBuffer(bd->IndexBufferSize * sizeof(ImDrawIdx),
+                                        D3DUSAGE_WRITEONLY,
+                                        fmt,
+                                        D3DPOOL_MANAGED,
+                                        &bd->pIB);
+            if (FAILED(hr) || !bd->pIB) {
+                bd->pIB = nullptr;
+                return;
+            }
+        }
+    }
+
+    if (!bd->pVB || !bd->pIB || draw_data->TotalVtxCount <= 0 || draw_data->TotalIdxCount <= 0)
+        return;
+
+    // Copy vertices & indices with safe lock error handling
+    CUSTOMVERTEX* vtx_dst = nullptr;
+    ImDrawIdx* idx_dst = nullptr;
+    HRESULT hrLockVB = bd->pVB->Lock(0, (UINT)(draw_data->TotalVtxCount * sizeof(CUSTOMVERTEX)), (BYTE**)&vtx_dst, D3DLOCK_DISCARD);
+    if (FAILED(hrLockVB) || !vtx_dst) {
+        hrLockVB = bd->pVB->Lock(0, (UINT)(draw_data->TotalVtxCount * sizeof(CUSTOMVERTEX)), (BYTE**)&vtx_dst, 0);
+        if (FAILED(hrLockVB) || !vtx_dst)
             return;
     }
 
-    // Copy vertices & indices
-    CUSTOMVERTEX* vtx_dst = nullptr;
-    ImDrawIdx* idx_dst = nullptr;
-    if (bd->pVB->Lock(0, (UINT)(draw_data->TotalVtxCount * sizeof(CUSTOMVERTEX)), (BYTE**)&vtx_dst, D3DLOCK_DISCARD) < 0)
-        return;
-    if (bd->pIB->Lock(0, (UINT)(draw_data->TotalIdxCount * sizeof(ImDrawIdx)), (BYTE**)&idx_dst, D3DLOCK_DISCARD) < 0) {
-        bd->pVB->Unlock();
-        return;
+    HRESULT hrLockIB = bd->pIB->Lock(0, (UINT)(draw_data->TotalIdxCount * sizeof(ImDrawIdx)), (BYTE**)&idx_dst, D3DLOCK_DISCARD);
+    if (FAILED(hrLockIB) || !idx_dst) {
+        hrLockIB = bd->pIB->Lock(0, (UINT)(draw_data->TotalIdxCount * sizeof(ImDrawIdx)), (BYTE**)&idx_dst, 0);
+        if (FAILED(hrLockIB) || !idx_dst) {
+            bd->pVB->Unlock();
+            return;
+        }
     }
 
     for (int n = 0; n < draw_data->CmdListsCount; n++) {

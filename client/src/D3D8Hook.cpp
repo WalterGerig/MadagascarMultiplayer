@@ -886,6 +886,19 @@ namespace MadMultiplayer {
                 bSceneStarted = true;
             }
 
+            // Query actual BackBuffer surface dimensions:
+            IDirect3DSurface8* pBackBuffer = nullptr;
+            D3DSURFACE_DESC backBufferDesc{};
+            bool hasBackBufferDesc = false;
+            if (SUCCEEDED(pDevice->GetBackBuffer(0, D3DBACKBUFFER_TYPE_MONO, &pBackBuffer)) && pBackBuffer) {
+                if (SUCCEEDED(pBackBuffer->GetDesc(&backBufferDesc))) {
+                    hasBackBufferDesc = true;
+                    // Ensure ImGui knows the exact physical backbuffer resolution:
+                    ImGui::GetIO().DisplaySize = ImVec2((float)backBufferDesc.Width, (float)backBufferDesc.Height);
+                }
+                pBackBuffer->Release();
+            }
+
             ImGui_ImplDX8_NewFrame();
             ImGui_ImplWin32_NewFrame();
             ImGui::NewFrame();
@@ -893,8 +906,28 @@ namespace MadMultiplayer {
             RenderOverlayUI();
 
             ImGui::EndFrame();
+
+            // Save the game's active viewport before ImGui rendering:
+            D3DVIEWPORT8 originalViewport{};
+            pDevice->GetViewport(&originalViewport);
+
+            // Reset viewport to full physical screen for ImGui:
+            if (hasBackBufferDesc && backBufferDesc.Width > 0 && backBufferDesc.Height > 0) {
+                D3DVIEWPORT8 imGuiViewport{};
+                imGuiViewport.X = 0;
+                imGuiViewport.Y = 0;
+                imGuiViewport.Width = backBufferDesc.Width;
+                imGuiViewport.Height = backBufferDesc.Height;
+                imGuiViewport.MinZ = 0.0f;
+                imGuiViewport.MaxZ = 1.0f;
+                pDevice->SetViewport(&imGuiViewport);
+            }
+
             ImGui::Render();
             ImGui_ImplDX8_RenderDrawData(ImGui::GetDrawData());
+
+            // Immediately restore the game's original viewport:
+            pDevice->SetViewport(&originalViewport);
 
             if (bSceneStarted) {
                 pDevice->EndScene();

@@ -275,6 +275,23 @@ typedef struct _D3DVERTEXBUFFER_DESC {
     DWORD               FVF;
 } D3DVERTEXBUFFER_DESC;
 
+typedef enum _D3DBACKBUFFER_TYPE {
+    D3DBACKBUFFER_TYPE_MONO         = 0,
+    D3DBACKBUFFER_TYPE_LEFT         = 1,
+    D3DBACKBUFFER_TYPE_RIGHT        = 2,
+    D3DBACKBUFFER_TYPE_FORCE_DWORD  = 0x7fffffff
+} D3DBACKBUFFER_TYPE;
+
+typedef struct _D3DSURFACE_DESC {
+    D3DFORMAT           Format;
+    DWORD               Type;
+    DWORD               Usage;
+    D3DPOOL             Pool;
+    DWORD               MultiSampleType;
+    UINT                Width;
+    UINT                Height;
+} D3DSURFACE_DESC;
+
 // Forward declarations of interfaces
 struct IDirect3D8;
 struct IDirect3DDevice8;
@@ -386,6 +403,27 @@ DECLARE_INTERFACE_(IDirect3DIndexBuffer8, IDirect3DResource8)
     STDMETHOD(Lock)(THIS_ UINT OffsetToLock, UINT SizeToLock, BYTE** ppbData, DWORD Flags) PURE;
     STDMETHOD(Unlock)(THIS) PURE;
     STDMETHOD(GetDesc)(THIS_ void* pDesc) PURE;
+};
+
+#undef INTERFACE
+#define INTERFACE IDirect3DSurface8
+DECLARE_INTERFACE_(IDirect3DSurface8, IDirect3DResource8)
+{
+    STDMETHOD(QueryInterface)(THIS_ REFIID riid, void** ppvObj) PURE;
+    STDMETHOD_(ULONG,AddRef)(THIS) PURE;
+    STDMETHOD_(ULONG,Release)(THIS) PURE;
+    STDMETHOD(GetDevice)(THIS_ IDirect3DDevice8** ppDevice) PURE;
+    STDMETHOD(SetPrivateData)(THIS_ REFGUID refguid, CONST void* pData, DWORD SizeOfData, DWORD Flags) PURE;
+    STDMETHOD(GetPrivateData)(THIS_ REFGUID refguid, void* pData, DWORD* pSizeOfData) PURE;
+    STDMETHOD(FreePrivateData)(THIS_ REFGUID refguid) PURE;
+    STDMETHOD_(DWORD, SetPriority)(THIS_ DWORD PriorityNew) PURE;
+    STDMETHOD_(DWORD, GetPriority)(THIS) PURE;
+    STDMETHOD_(void, PreLoad)(THIS) PURE;
+    STDMETHOD_(DWORD, GetType)(THIS) PURE;
+    STDMETHOD(GetContainer)(THIS_ REFIID riid, void** ppContainer) PURE;
+    STDMETHOD(GetDesc)(THIS_ D3DSURFACE_DESC* pDesc) PURE;
+    STDMETHOD(LockRect)(THIS_ D3DLOCKED_RECT* pLockedRect, CONST RECT* pRect, DWORD Flags) PURE;
+    STDMETHOD(UnlockRect)(THIS) PURE;
 };
 
 #undef INTERFACE
