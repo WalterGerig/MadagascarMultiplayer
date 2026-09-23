@@ -39,6 +39,8 @@ namespace MadMultiplayer {
         bool IsOverlayVisible() const { return m_showOverlay.load(); }
         void ToggleOverlayVisibility();
         void ToggleOverlay() { ToggleOverlayVisibility(); } // Alias
+        void SetOverlayVisibility(bool visible);
+        void EnsureImGuiInitialized(IDirect3DDevice8* pDevice);
 
         // F2: UI / Maus-Modus (UI-Bedienung vs. Gameplay-Fesselung)
         bool IsMouseInputMode() const { return m_mouseInputMode.load(); }
@@ -109,27 +111,13 @@ namespace MadMultiplayer {
         void RenderOverlayUI();
         void UnlockMouseCursor();
 
-        using PFN_Reset                  = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice8*, D3DPRESENT_PARAMETERS*);
-        using PFN_Present                = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice8*, CONST RECT*, CONST RECT*, HWND, CONST RGNDATA*);
-        using PFN_EndScene               = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice8*);
-        using PFN_SetTransform           = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice8*, DWORD, CONST D3DMATRIX*);
-        using PFN_SetViewport            = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice8*, CONST D3DVIEWPORT8*);
-        using PFN_DrawPrimitive          = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice8*, D3DPRIMITIVETYPE, UINT, UINT);
-        using PFN_DrawIndexedPrimitive   = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice8*, D3DPRIMITIVETYPE, UINT, UINT, UINT, UINT);
-        using PFN_DrawPrimitiveUP        = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice8*, D3DPRIMITIVETYPE, UINT, CONST void*, UINT);
-        using PFN_DrawIndexedPrimitiveUP = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice8*, D3DPRIMITIVETYPE, UINT, UINT, UINT, CONST void*, D3DFORMAT, CONST void*, UINT);
-        using PFN_SetVertexShader        = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice8*, DWORD);
+        using PFN_Reset   = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice8*, D3DPRESENT_PARAMETERS*);
+        using PFN_Present = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice8*, CONST RECT*, CONST RECT*, HWND, CONST RGNDATA*);
+        using PFN_EndScene = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice8*);
 
-        PFN_Reset                  m_pOriginalReset{ nullptr };
-        PFN_Present                m_pOriginalPresent{ nullptr };
-        PFN_EndScene               m_pOriginalEndScene{ nullptr };
-        PFN_SetTransform           m_pOriginalSetTransform{ nullptr };
-        PFN_SetViewport            m_pOriginalSetViewport{ nullptr };
-        PFN_DrawPrimitive          m_pOriginalDrawPrimitive{ nullptr };
-        PFN_DrawIndexedPrimitive   m_pOriginalDrawIndexedPrimitive{ nullptr };
-        PFN_DrawPrimitiveUP        m_pOriginalDrawPrimitiveUP{ nullptr };
-        PFN_DrawIndexedPrimitiveUP m_pOriginalDrawIndexedPrimitiveUP{ nullptr };
-        PFN_SetVertexShader        m_pOriginalSetVertexShader{ nullptr };
+        PFN_Reset   m_pOriginalReset{ nullptr };
+        PFN_Present m_pOriginalPresent{ nullptr };
+        PFN_EndScene m_pOriginalEndScene{ nullptr };
 
         IDirect3DDevice8* m_pDevice{ nullptr };
         HWND              m_hGameWindow{ nullptr };
@@ -157,7 +145,6 @@ namespace MadMultiplayer {
         LONG                  m_prevWindowStyle{ 0 };
         int                   m_screenWidth{ 800 };
         int                   m_screenHeight{ 600 };
-        DWORD                 m_currentFVF{ 0 };
 
         ThreadSafeTransform*  m_pTransformStore{ nullptr };
 
@@ -167,20 +154,10 @@ namespace MadMultiplayer {
         char m_playerName[32]{ "Player 1" };
         bool m_isConnected{ false };
 
-        // 2D UI & Cutscene Filter-Hilfsfunktion
-        bool Process2DVertices(D3DPRIMITIVETYPE primType, UINT primCount, const void* pInVertices, UINT stride, void* pOutVertices, bool& outDrop);
-
-        // Statische Hooks für VTable & WndProc
+        // Statische Hooks für Minimal-VTable (Reset, Present, EndScene) & WndProc
         static HRESULT STDMETHODCALLTYPE Hooked_Reset(IDirect3DDevice8* pDevice, D3DPRESENT_PARAMETERS* pPresentationParameters);
         static HRESULT STDMETHODCALLTYPE Hooked_Present(IDirect3DDevice8* pDevice, CONST RECT* pSourceRect, CONST RECT* pDestRect, HWND hDestWindowOverride, CONST RGNDATA* pDirtyRegion);
         static HRESULT STDMETHODCALLTYPE Hooked_EndScene(IDirect3DDevice8* pDevice);
-        static HRESULT STDMETHODCALLTYPE Hooked_SetTransform(IDirect3DDevice8* pDevice, DWORD State, CONST D3DMATRIX* pMatrix);
-        static HRESULT STDMETHODCALLTYPE Hooked_SetViewport(IDirect3DDevice8* pDevice, CONST D3DVIEWPORT8* pViewport);
-        static HRESULT STDMETHODCALLTYPE Hooked_DrawPrimitive(IDirect3DDevice8* pDevice, D3DPRIMITIVETYPE PrimitiveType, UINT StartVertex, UINT PrimitiveCount);
-        static HRESULT STDMETHODCALLTYPE Hooked_DrawIndexedPrimitive(IDirect3DDevice8* pDevice, D3DPRIMITIVETYPE PrimitiveType, UINT minIndex, UINT NumVertices, UINT startIndex, UINT primCount);
-        static HRESULT STDMETHODCALLTYPE Hooked_DrawPrimitiveUP(IDirect3DDevice8* pDevice, D3DPRIMITIVETYPE PrimitiveType, UINT PrimitiveCount, CONST void* pVertexStreamZeroData, UINT VertexStreamZeroStride);
-        static HRESULT STDMETHODCALLTYPE Hooked_DrawIndexedPrimitiveUP(IDirect3DDevice8* pDevice, D3DPRIMITIVETYPE PrimitiveType, UINT MinVertexIndex, UINT NumVertexIndices, UINT PrimitiveCount, CONST void* pIndexData, D3DFORMAT IndexDataFormat, CONST void* pVertexStreamZeroData, UINT VertexStreamZeroStride);
-        static HRESULT STDMETHODCALLTYPE Hooked_SetVertexShader(IDirect3DDevice8* pDevice, DWORD Handle);
 
         static LRESULT CALLBACK Hooked_GameWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
         static LRESULT CALLBACK Hooked_ConsoleWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
@@ -188,21 +165,18 @@ namespace MadMultiplayer {
         using PFN_GetCursorPos = BOOL(WINAPI*)(LPPOINT);
         static PFN_GetCursorPos s_pOriginalGetCursorPos;
         static BOOL WINAPI Hooked_GetCursorPos(LPPOINT lpPoint);
-
-        using PFN_Render2DQuads = int(__cdecl*)(int, void*, int);
-        static PFN_Render2DQuads s_pOriginalRender2DQuads;
-        static int __cdecl Hooked_Render2DQuads(int primType, void* pVertices, int numVertices);
-
-        using PFN_RwCameraBeginUpdate = void*(__cdecl*)(void*);
-        static PFN_RwCameraBeginUpdate s_pOriginalRwCameraBeginUpdate;
-        static void* __cdecl Hooked_RwCameraBeginUpdate(void* camera);
     };
 
-    // Globale Zustandsvariable fuer strikte modale Eingabe-Isolation (F2)
+    // Globale Zustandsvariablen fuer strikte modale Eingabe-Isolation (F2) & Overlay-Sichtbarkeit (F3)
     extern bool g_bUIModeActive;
     void ToggleUIMode();
     void SetUIMode(bool active);
     bool IsUIModeActive();
+
+    extern bool g_bOverlayVisible;
+    void ToggleOverlay();
+    void SetOverlayVisible(bool visible);
+    bool IsOverlayVisible();
 
 } // namespace MadMultiplayer
 
@@ -210,3 +184,8 @@ using MadMultiplayer::g_bUIModeActive;
 using MadMultiplayer::ToggleUIMode;
 using MadMultiplayer::SetUIMode;
 using MadMultiplayer::IsUIModeActive;
+
+using MadMultiplayer::g_bOverlayVisible;
+using MadMultiplayer::ToggleOverlay;
+using MadMultiplayer::SetOverlayVisible;
+using MadMultiplayer::IsOverlayVisible;

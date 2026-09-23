@@ -27,6 +27,21 @@ namespace MadMultiplayer {
         return g_bUIModeActive;
     }
 
+    bool g_bOverlayVisible = true;
+
+    void ToggleOverlay() {
+        D3D8Hook::Instance().ToggleOverlayVisibility();
+    }
+
+    void SetOverlayVisible(bool visible) {
+        g_bOverlayVisible = visible;
+        D3D8Hook::Instance().SetOverlayVisibility(visible);
+    }
+
+    bool IsOverlayVisible() {
+        return g_bOverlayVisible;
+    }
+
     static bool g_bRenderedThisFrame = false;
 
     void D3D8Hook::SaveD3D8State(IDirect3DDevice8* pDevice, D3D8StateBackup& b) {
@@ -126,9 +141,6 @@ namespace MadMultiplayer {
     }
 
     D3D8Hook::PFN_GetCursorPos D3D8Hook::s_pOriginalGetCursorPos = nullptr;
-    D3D8Hook::PFN_Render2DQuads D3D8Hook::s_pOriginalRender2DQuads = nullptr;
-    D3D8Hook::PFN_RwCameraBeginUpdate D3D8Hook::s_pOriginalRwCameraBeginUpdate = nullptr;
-    static uint8_t s_rwCameraBeginUpdateTrampoline[32] = { 0 };
 
     D3D8Hook& D3D8Hook::Instance() {
         static D3D8Hook instance;
@@ -151,9 +163,14 @@ namespace MadMultiplayer {
         if (now - s_lastF3Tick < 150) return;
         s_lastF3Tick = now;
 
-        bool visible = !m_showOverlay.load();
+        g_bOverlayVisible = !g_bOverlayVisible;
+        m_showOverlay.store(g_bOverlayVisible);
+        MAD_LOG("[D3D8Hook] Overlay Sichtbarkeit geaendert -> %s (Taste F3)", g_bOverlayVisible ? "SICHTBAR" : "VERSTECKT");
+    }
+
+    void D3D8Hook::SetOverlayVisibility(bool visible) {
+        g_bOverlayVisible = visible;
         m_showOverlay.store(visible);
-        MAD_LOG("[D3D8Hook] Overlay Sichtbarkeit geaendert -> %s (Taste F3)", visible ? "SICHTBAR" : "VERSTECKT");
     }
 
     // F2: Maus-Modus umschalten (UI-Klicks vs. Gameplay-Kamerasteuerung)
@@ -488,13 +505,6 @@ namespace MadMultiplayer {
         PFN_Reset targetReset = reinterpret_cast<PFN_Reset>(vtable[14]);
         PFN_Present targetPresent = reinterpret_cast<PFN_Present>(vtable[15]);
         PFN_EndScene targetEndScene = reinterpret_cast<PFN_EndScene>(vtable[35]);
-        PFN_SetTransform targetSetTransform = reinterpret_cast<PFN_SetTransform>(vtable[37]);
-        PFN_SetViewport targetSetViewport = reinterpret_cast<PFN_SetViewport>(vtable[40]);
-        PFN_DrawPrimitive targetDrawPrimitive = reinterpret_cast<PFN_DrawPrimitive>(vtable[70]);
-        PFN_DrawIndexedPrimitive targetDrawIndexedPrimitive = reinterpret_cast<PFN_DrawIndexedPrimitive>(vtable[71]);
-        PFN_DrawPrimitiveUP targetDrawPrimitiveUP = reinterpret_cast<PFN_DrawPrimitiveUP>(vtable[72]);
-        PFN_DrawIndexedPrimitiveUP targetDrawIndexedPrimitiveUP = reinterpret_cast<PFN_DrawIndexedPrimitiveUP>(vtable[73]);
-        PFN_SetVertexShader targetSetVertexShader = reinterpret_cast<PFN_SetVertexShader>(vtable[76]);
 
         if (targetPresent == Hooked_Present || targetEndScene == Hooked_EndScene) {
             return true;
@@ -503,17 +513,10 @@ namespace MadMultiplayer {
         m_pOriginalReset = targetReset;
         m_pOriginalPresent = targetPresent;
         m_pOriginalEndScene = targetEndScene;
-        m_pOriginalSetTransform = targetSetTransform;
-        m_pOriginalSetViewport = targetSetViewport;
-        m_pOriginalDrawPrimitive = targetDrawPrimitive;
-        m_pOriginalDrawIndexedPrimitive = targetDrawIndexedPrimitive;
-        m_pOriginalDrawPrimitiveUP = targetDrawPrimitiveUP;
-        m_pOriginalDrawIndexedPrimitiveUP = targetDrawIndexedPrimitiveUP;
-        m_pOriginalSetVertexShader = targetSetVertexShader;
 
         DWORD oldProtect = 0;
-        // Unprotect slots 14 through 77 (64 slots = 256 bytes)
-        if (!VirtualProtect(&vtable[14], sizeof(void*) * 65, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        // Unprotect slots 14 through 35 (22 slots = 88 bytes)
+        if (!VirtualProtect(&vtable[14], sizeof(void*) * 22, PAGE_EXECUTE_READWRITE, &oldProtect)) {
             MAD_LOG("[D3D8Hook] FEHLER: VirtualProtect auf Device VTable fehlgeschlagen! Error: %lu", GetLastError());
             return false;
         }
@@ -521,15 +524,8 @@ namespace MadMultiplayer {
         vtable[14] = reinterpret_cast<void*>(&Hooked_Reset);
         vtable[15] = reinterpret_cast<void*>(&Hooked_Present);
         vtable[35] = reinterpret_cast<void*>(&Hooked_EndScene);
-        vtable[37] = reinterpret_cast<void*>(&Hooked_SetTransform);
-        vtable[40] = reinterpret_cast<void*>(&Hooked_SetViewport);
-        vtable[70] = reinterpret_cast<void*>(&Hooked_DrawPrimitive);
-        vtable[71] = reinterpret_cast<void*>(&Hooked_DrawIndexedPrimitive);
-        vtable[72] = reinterpret_cast<void*>(&Hooked_DrawPrimitiveUP);
-        vtable[73] = reinterpret_cast<void*>(&Hooked_DrawIndexedPrimitiveUP);
-        vtable[76] = reinterpret_cast<void*>(&Hooked_SetVertexShader);
 
-        VirtualProtect(&vtable[14], sizeof(void*) * 65, oldProtect, &oldProtect);
+        VirtualProtect(&vtable[14], sizeof(void*) * 22, oldProtect, &oldProtect);
 
         // IAT Hook auf GetCursorPos in Game.exe installieren (fuer 1:1 Maus-Koordinaten in Menus)
         uintptr_t gameBase = (uintptr_t)GetModuleHandleA(nullptr);
@@ -546,71 +542,9 @@ namespace MadMultiplayer {
             }
         }
 
-        // 1. In-Game Software-Mauszeiger komplett unsichtbar machen (NOP der Render-Calls)
-        // 0x00462FF4 und 0x004636D1 in Game.exe (jeweils 9 Bytes: push reg; call 0x413f90; add esp, 4)
-        if (gameBase) {
-            void* pCursorDraw1 = reinterpret_cast<void*>(gameBase + 0x00062FF4);
-            void* pCursorDraw2 = reinterpret_cast<void*>(gameBase + 0x000636D1);
-
-            DWORD oldProt = 0;
-            if (VirtualProtect(pCursorDraw1, 9, PAGE_EXECUTE_READWRITE, &oldProt)) {
-                memset(pCursorDraw1, 0x90, 9);
-                VirtualProtect(pCursorDraw1, 9, oldProt, &oldProt);
-                MAD_LOG("[D3D8Hook] In-Game Software-Cursor DrawCall #1 an 0x%p erfolgreich deaktiviert (NOP).", pCursorDraw1);
-            }
-            if (VirtualProtect(pCursorDraw2, 9, PAGE_EXECUTE_READWRITE, &oldProt)) {
-                memset(pCursorDraw2, 0x90, 9);
-                VirtualProtect(pCursorDraw2, 9, oldProt, &oldProt);
-                MAD_LOG("[D3D8Hook] In-Game Software-Cursor DrawCall #2 an 0x%p erfolgreich deaktiviert (NOP).", pCursorDraw2);
-            }
-
-            // 2. 2D UI Render-Dispatch Hook installieren (Tabelle 0x60B080, Slot 0x60B0B8)
-            void** pDispatchTableEntry = reinterpret_cast<void**>(gameBase + 0x0020B0B8);
-            if (pDispatchTableEntry && !IsBadReadPtr(pDispatchTableEntry, sizeof(void*)) && !s_pOriginalRender2DQuads) {
-                if (VirtualProtect(pDispatchTableEntry, sizeof(void*), PAGE_EXECUTE_READWRITE, &oldProt)) {
-                    s_pOriginalRender2DQuads = reinterpret_cast<PFN_Render2DQuads>(*pDispatchTableEntry);
-                    *pDispatchTableEntry = reinterpret_cast<void*>(&Hooked_Render2DQuads);
-                    VirtualProtect(pDispatchTableEntry, sizeof(void*), oldProt, &oldProt);
-                    MAD_LOG("[D3D8Hook] 2D UI Render-Dispatch Hook (0x%p -> 0x%p) erfolgreich aktiv!", 
-                            (void*)pDispatchTableEntry, (void*)&Hooked_Render2DQuads);
-                }
-            }
-
-            // 3. RenderWare Camera BeginUpdate Hook (0x004D70F0):
-            // Fängt JEDEN Kamera-Aufruf ab, synchronisiert viewWindow.x auf 16:9 und berechnet die 6 Frustum-Planes neu!
-            // Beseitigt das CPU-seitige Frustum Culling an den Bildschirmrändern (kein Objekt-Pop-In mehr!).
-            void* pCameraBeginUpdate = reinterpret_cast<void*>(gameBase + 0x000D70F0);
-            if (pCameraBeginUpdate && !s_pOriginalRwCameraBeginUpdate) {
-                if (VirtualProtect(s_rwCameraBeginUpdateTrampoline, sizeof(s_rwCameraBeginUpdateTrampoline), PAGE_EXECUTE_READWRITE, &oldProt)) {
-                    // 10 Bytes Original-Code in Trampolin kopieren
-                    memcpy(s_rwCameraBeginUpdateTrampoline, pCameraBeginUpdate, 10);
-                    // JMP zurück zu pCameraBeginUpdate + 10 (0x004D70FA)
-                    s_rwCameraBeginUpdateTrampoline[10] = 0xE9;
-                    uintptr_t jmpBackTarget = (uintptr_t)pCameraBeginUpdate + 10;
-                    uintptr_t jmpBackFrom = (uintptr_t)&s_rwCameraBeginUpdateTrampoline[10] + 5;
-                    *reinterpret_cast<int32_t*>(&s_rwCameraBeginUpdateTrampoline[11]) = (int32_t)(jmpBackTarget - jmpBackFrom);
-
-                    // Zielcode (0x004D70F0) patchen mit JMP zu Hooked_RwCameraBeginUpdate
-                    if (VirtualProtect(pCameraBeginUpdate, 10, PAGE_EXECUTE_READWRITE, &oldProt)) {
-                        uint8_t* pCode = reinterpret_cast<uint8_t*>(pCameraBeginUpdate);
-                        pCode[0] = 0xE9;
-                        uintptr_t hookAddr = (uintptr_t)&Hooked_RwCameraBeginUpdate;
-                        uintptr_t srcAddr = (uintptr_t)pCameraBeginUpdate + 5;
-                        *reinterpret_cast<int32_t*>(&pCode[1]) = (int32_t)(hookAddr - srcAddr);
-                        memset(&pCode[5], 0x90, 5); // 5 NOPs
-                        VirtualProtect(pCameraBeginUpdate, 10, oldProt, &oldProt);
-                        FlushInstructionCache(GetCurrentProcess(), pCameraBeginUpdate, 10);
-
-                        s_pOriginalRwCameraBeginUpdate = reinterpret_cast<PFN_RwCameraBeginUpdate>(&s_rwCameraBeginUpdateTrampoline[0]);
-                        MAD_LOG("[D3D8Hook] RwCameraBeginUpdate (0x%p) erfolgreich mit 16:9 Frustum Culling Hook detoured!", pCameraBeginUpdate);
-                    }
-                }
-            }
-        }
-
         m_initialized.store(true);
         MAD_LOG("[D3D8Hook] DIRECT MEMORY HOOK SUCCESS: D3D8 Device at 0x%p hooked!", (void*)m_pDevice);
-        MAD_LOG("[D3D8Hook] VTable Swapped: Reset(14), EndScene(35), SetTransform(37), SetViewport(40), DrawPrim(70), DrawIndexedPrim(71), DrawPrimUP(72), DrawIndexedPrimUP(73), SetVS(76)");
+        MAD_LOG("[D3D8Hook] Minimal VTable Swapped: Reset(14), Present(15), EndScene(35)");
         return true;
     }
 
@@ -749,38 +683,125 @@ namespace MadMultiplayer {
             s_pOriginalGetCursorPos = nullptr;
         }
 
-        if (gameBase && s_pOriginalRender2DQuads) {
-            void** pDispatchTableEntry = reinterpret_cast<void**>(gameBase + 0x0020B0B8);
-            if (pDispatchTableEntry && !IsBadWritePtr(pDispatchTableEntry, sizeof(void*))) {
-                DWORD oldProtect = 0;
-                if (VirtualProtect(pDispatchTableEntry, sizeof(void*), PAGE_EXECUTE_READWRITE, &oldProtect)) {
-                    *pDispatchTableEntry = reinterpret_cast<void*>(s_pOriginalRender2DQuads);
-                    VirtualProtect(pDispatchTableEntry, sizeof(void*), oldProtect, &oldProtect);
-                }
-            }
-            s_pOriginalRender2DQuads = nullptr;
-        }
-
-        if (gameBase && s_pOriginalRwCameraBeginUpdate) {
-            void* pCameraBeginUpdate = reinterpret_cast<void*>(gameBase + 0x000D70F0);
-            DWORD oldProt = 0;
-            if (VirtualProtect(pCameraBeginUpdate, 10, PAGE_EXECUTE_READWRITE, &oldProt)) {
-                memcpy(pCameraBeginUpdate, s_rwCameraBeginUpdateTrampoline, 10);
-                VirtualProtect(pCameraBeginUpdate, 10, oldProt, &oldProt);
-                FlushInstructionCache(GetCurrentProcess(), pCameraBeginUpdate, 10);
-            }
-            s_pOriginalRwCameraBeginUpdate = nullptr;
-        }
-
         m_initialized.store(false);
         MAD_LOG("[D3D8Hook] Subsystem beendet.");
     }
 
+    void D3D8Hook::EnsureImGuiInitialized(IDirect3DDevice8* pDevice) {
+        if (m_imguiInitialized.load() || !pDevice) return;
+
+        if (!m_hGameWindow) {
+            m_hGameWindow = FindWindowA("RWSConsoleD3D8", nullptr);
+            if (!m_hGameWindow) {
+                D3DDEVICE_CREATION_PARAMETERS cp = {};
+                if (SUCCEEDED(pDevice->GetCreationParameters(&cp))) {
+                    m_hGameWindow = cp.hFocusWindow;
+                }
+            }
+        }
+
+        m_hConsoleWindow = GetConsoleWindow();
+
+        MAD_LOG("[D3D8Hook] ImGui Initialisierung fuer HWND: 0x%08X...", (unsigned int)(uintptr_t)m_hGameWindow);
+
+        if (m_hGameWindow) {
+            m_pOriginalGameWndProc = reinterpret_cast<WNDPROC>(
+                SetWindowLongPtrA(m_hGameWindow, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&Hooked_GameWndProc))
+            );
+
+            if (m_hConsoleWindow && m_hConsoleWindow != m_hGameWindow) {
+                m_pOriginalConsoleWndProc = reinterpret_cast<WNDPROC>(
+                    SetWindowLongPtrA(m_hConsoleWindow, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&Hooked_ConsoleWndProc))
+                );
+            }
+
+            IMGUI_CHECKVERSION();
+            ImGui::CreateContext();
+            ImGuiIO& io = ImGui::GetIO();
+            io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+
+            ImGuiStyle& style = ImGui::GetStyle();
+            style.WindowRounding = 6.0f;
+            style.FrameRounding = 4.0f;
+            style.Colors[ImGuiCol_WindowBg] = ImVec4(0.08f, 0.08f, 0.10f, 0.94f);
+
+            ImGui_ImplWin32_Init(m_hGameWindow);
+            ImGui_ImplDX8_Init(pDevice);
+
+            m_imguiInitialized.store(true);
+            MAD_LOG("[D3D8Hook] ImGui DX8 Render-Loop ERFOLGREICH INITIALISIERT!");
+
+            UpdateMouseCapture();
+        }
+    }
+
     void D3D8Hook::OnEndScene(IDirect3DDevice8* pDevice) {
         m_pDevice = pDevice;
-        // In Madagascar (2005) ruft RenderWare EndScene mehrfach pro Frame auf (Schattenpass, Weltpass, 2D UI).
-        // Das tatsaechliche Rendern von ImGui findet strikt 1x pro Frame in OnPresent() statt,
-        // um Multi-Layer Stacking und Ghosting restlos zu eliminieren!
+        if (!pDevice) return;
+
+        EnsureImGuiInitialized(pDevice);
+
+        if (!m_imguiInitialized.load() || !g_bOverlayVisible || g_bRenderedThisFrame) {
+            return;
+        }
+
+        // Sicherstellen, dass das aktuelle RenderTarget der echte BackBuffer ist (keine Shadow-Maps/Texturen)
+        IDirect3DSurface8* pRenderTarget = nullptr;
+        IDirect3DSurface8* pBackBuffer = nullptr;
+        bool isBackBuffer = true;
+        if (SUCCEEDED(pDevice->GetRenderTarget(&pRenderTarget)) && pRenderTarget) {
+            if (SUCCEEDED(pDevice->GetBackBuffer(0, D3DBACKBUFFER_TYPE_MONO, &pBackBuffer)) && pBackBuffer) {
+                isBackBuffer = (pRenderTarget == pBackBuffer);
+                pBackBuffer->Release();
+            }
+            pRenderTarget->Release();
+        }
+        if (!isBackBuffer) {
+            return;
+        }
+
+        // Backbuffer-Dimensionen fuer ImGui DisplaySize ermitteln
+        D3DSURFACE_DESC backBufferDesc{};
+        if (SUCCEEDED(pDevice->GetBackBuffer(0, D3DBACKBUFFER_TYPE_MONO, &pBackBuffer)) && pBackBuffer) {
+            if (SUCCEEDED(pBackBuffer->GetDesc(&backBufferDesc))) {
+                if (backBufferDesc.Width > 0 && backBufferDesc.Height > 0) {
+                    ImGui::GetIO().DisplaySize = ImVec2((float)backBufferDesc.Width, (float)backBufferDesc.Height);
+                }
+            }
+            pBackBuffer->Release();
+        }
+
+        D3D8StateBackup backup{};
+        SaveD3D8State(pDevice, backup);
+
+        ImGui_ImplDX8_NewFrame();
+        ImGui_ImplWin32_NewFrame();
+        ImGui::NewFrame();
+
+        RenderOverlayUI();
+
+        ImGui::EndFrame();
+        ImGui::Render();
+
+        // 3. SAFE VIEWPORT HANDLING IN Hooked_EndScene:
+        // Do NOT unconditionally overwrite viewports during startup or loading screens.
+        // Only save and restore the viewport if originalViewport.Width > 0 && originalViewport.Height > 0:
+        D3DVIEWPORT8 origVp;
+        if (SUCCEEDED(pDevice->GetViewport(&origVp)) && origVp.Width > 0 && origVp.Height > 0) {
+            D3DVIEWPORT8 imguiVp = origVp;
+            imguiVp.X = 0;
+            imguiVp.Y = 0;
+            pDevice->SetViewport(&imguiVp);
+
+            ImGui_ImplDX8_RenderDrawData(ImGui::GetDrawData());
+
+            pDevice->SetViewport(&origVp);
+        } else {
+            ImGui_ImplDX8_RenderDrawData(ImGui::GetDrawData());
+        }
+
+        RestoreD3D8State(pDevice, backup);
+        g_bRenderedThisFrame = true;
     }
 
     void D3D8Hook::OnPresent(IDirect3DDevice8* pDevice) {
@@ -827,115 +848,8 @@ namespace MadMultiplayer {
             ::ClipCursor(nullptr);
         }
 
-        // 6. Lazy Initialization von ImGui beim ersten echten Present-Aufruf
-        if (!m_imguiInitialized.load()) {
-            if (!m_hGameWindow) {
-                m_hGameWindow = FindWindowA("RWSConsoleD3D8", nullptr);
-                if (!m_hGameWindow) {
-                    D3DDEVICE_CREATION_PARAMETERS cp = {};
-                    if (SUCCEEDED(pDevice->GetCreationParameters(&cp))) {
-                        m_hGameWindow = cp.hFocusWindow;
-                    }
-                }
-            }
-
-            m_hConsoleWindow = GetConsoleWindow();
-
-            MAD_LOG("[D3D8Hook] ImGui Initialisierung beim ersten Present Aufruf fuer HWND: 0x%08X...", (unsigned int)(uintptr_t)m_hGameWindow);
-
-            if (m_hGameWindow) {
-                m_pOriginalGameWndProc = reinterpret_cast<WNDPROC>(
-                    SetWindowLongPtrA(m_hGameWindow, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&Hooked_GameWndProc))
-                );
-
-                if (m_hConsoleWindow && m_hConsoleWindow != m_hGameWindow) {
-                    m_pOriginalConsoleWndProc = reinterpret_cast<WNDPROC>(
-                        SetWindowLongPtrA(m_hConsoleWindow, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&Hooked_ConsoleWndProc))
-                    );
-                }
-
-                IMGUI_CHECKVERSION();
-                ImGui::CreateContext();
-                ImGuiIO& io = ImGui::GetIO();
-                io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-
-                ImGuiStyle& style = ImGui::GetStyle();
-                style.WindowRounding = 6.0f;
-                style.FrameRounding = 4.0f;
-                style.Colors[ImGuiCol_WindowBg] = ImVec4(0.08f, 0.08f, 0.10f, 0.94f);
-
-                ImGui_ImplWin32_Init(m_hGameWindow);
-                ImGui_ImplDX8_Init(pDevice);
-
-                m_imguiInitialized.store(true);
-                MAD_LOG("[D3D8Hook] ImGui DX8 Render-Loop ERFOLGREICH INITIALISIERT!");
-
-                UpdateMouseCapture();
-            }
-        }
-
-        // 7. STRICT FRAME GATE & COMPLETE D3D8 STATE PRESERVATION:
-        // Rendern NUR wenn m_showOverlay aktiv ist - Exakt 1x pro Present auf den Backbuffer!
-        if (m_imguiInitialized.load() && m_showOverlay.load() && !g_bRenderedThisFrame) {
-            D3D8StateBackup backup{};
-            SaveD3D8State(pDevice, backup);
-
-            bool bSceneStarted = false;
-            HRESULT hrBegin = pDevice->BeginScene();
-            if (SUCCEEDED(hrBegin)) {
-                bSceneStarted = true;
-            }
-
-            // Query actual BackBuffer surface dimensions:
-            IDirect3DSurface8* pBackBuffer = nullptr;
-            D3DSURFACE_DESC backBufferDesc{};
-            bool hasBackBufferDesc = false;
-            if (SUCCEEDED(pDevice->GetBackBuffer(0, D3DBACKBUFFER_TYPE_MONO, &pBackBuffer)) && pBackBuffer) {
-                if (SUCCEEDED(pBackBuffer->GetDesc(&backBufferDesc))) {
-                    hasBackBufferDesc = true;
-                    // Ensure ImGui knows the exact physical backbuffer resolution:
-                    ImGui::GetIO().DisplaySize = ImVec2((float)backBufferDesc.Width, (float)backBufferDesc.Height);
-                }
-                pBackBuffer->Release();
-            }
-
-            ImGui_ImplDX8_NewFrame();
-            ImGui_ImplWin32_NewFrame();
-            ImGui::NewFrame();
-
-            RenderOverlayUI();
-
-            ImGui::EndFrame();
-
-            // Save the game's active viewport before ImGui rendering:
-            D3DVIEWPORT8 originalViewport{};
-            pDevice->GetViewport(&originalViewport);
-
-            // Reset viewport to full physical screen for ImGui:
-            if (hasBackBufferDesc && backBufferDesc.Width > 0 && backBufferDesc.Height > 0) {
-                D3DVIEWPORT8 imGuiViewport{};
-                imGuiViewport.X = 0;
-                imGuiViewport.Y = 0;
-                imGuiViewport.Width = backBufferDesc.Width;
-                imGuiViewport.Height = backBufferDesc.Height;
-                imGuiViewport.MinZ = 0.0f;
-                imGuiViewport.MaxZ = 1.0f;
-                pDevice->SetViewport(&imGuiViewport);
-            }
-
-            ImGui::Render();
-            ImGui_ImplDX8_RenderDrawData(ImGui::GetDrawData());
-
-            // Immediately restore the game's original viewport:
-            pDevice->SetViewport(&originalViewport);
-
-            if (bSceneStarted) {
-                pDevice->EndScene();
-            }
-
-            RestoreD3D8State(pDevice, backup);
-            g_bRenderedThisFrame = true;
-        }
+        // 6. Sicherstellen, dass ImGui und WndProc verknuepft sind
+        EnsureImGuiInitialized(pDevice);
 
         m_frameRendered.store(true);
     }
@@ -955,15 +869,19 @@ namespace MadMultiplayer {
     }
 
     void D3D8Hook::RenderOverlayUI() {
+        if (!g_bOverlayVisible) return;
+
         ImGuiWindowFlags windowFlags = ImGuiWindowFlags_None;
         if (!g_bUIModeActive) {
             windowFlags |= ImGuiWindowFlags_NoInputs;
         }
 
         ImGui::SetNextWindowSize(ImVec2(540, 460), ImGuiCond_FirstUseEver);
-        bool open = m_showOverlay.load();
+        bool open = true;
         if (ImGui::Begin("Madagascar Multiplayer Client ###MadMultiplayerUI", &open, windowFlags)) {
-            m_showOverlay.store(open);
+            if (!open) {
+                ToggleOverlay();
+            }
             ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "MADAGASCAR (2005) - MULTIPLAYER OVERLAY");
             ImGui::TextDisabled("Hotkeys: [F2] UI-Modus an/aus | [F3] Menue ein/aus | [Taste 9] 16:9 Widescreen");
             ImGui::Separator();
@@ -1266,386 +1184,6 @@ namespace MadMultiplayer {
         return hr;
     }
 
-    // FOV & Aspect Ratio Hor+ Korrektur (Slot 37: SetTransform)
-    HRESULT STDMETHODCALLTYPE D3D8Hook::Hooked_SetTransform(IDirect3DDevice8* pDevice, DWORD State, CONST D3DMATRIX* pMatrix) {
-        auto& hook = D3D8Hook::Instance();
-        // State 3 = D3DTS_PROJECTION
-        if (hook.m_isBorderless && State == 3 && pMatrix && hook.m_screenHeight > 0) {
-            D3DMATRIX modified = *pMatrix;
-            float currentAspect = (float)hook.m_screenWidth / (float)hook.m_screenHeight;
-            float originalAspect = 4.0f / 3.0f; // 1.333333f
-
-            // Perspective Projection Matrix (3D-Welt Geometrie)
-            // Bei D3D Perspektiv-Matrizen ist _44 stets 0.0f (Ortho-Projektionen werden unberuehrt gelassen)
-            bool isPerspective = (fabsf(modified._44) < 0.001f && fabsf(modified._11) > 0.0001f && fabsf(modified._22) > 0.0001f);
-            if (isPerspective && currentAspect > originalAspect) {
-                // In D3D Perspective gilt: aspect = fabsf(_22 / _11)
-                float matrixAspect = fabsf(modified._22 / modified._11);
-
-                // KRITISCH GEGEN HORIZONTALE VERZERRUNG / DOPPEL-SKALIERUNG:
-                // Falls RenderWare (durch UpdateRenderWareCameraFrustum) die Matrix bereits auf 16:9 aufgebaut hat,
-                // entspricht matrixAspect bereits ~currentAspect (z.B. 1.777f).
-                // Wir wenden aspectCorrectionFactor = (4.0f/3.0f) / currentAspect NUR an,
-                // wenn die Matrix noch das originale 4:3 Seitenverhaeltnis aufweist!
-                if (matrixAspect < currentAspect - 0.05f) {
-                    float factor = originalAspect / currentAspect;
-                    modified._11 *= factor;
-
-                    static uint32_t s_lastPerspLog = 0;
-                    if (hook.m_frameCount.load() - s_lastPerspLog > 300) {
-                        s_lastPerspLog = (uint32_t)hook.m_frameCount.load();
-                        MAD_LOG("[D3D8:PERSP] Scaled 4:3 perspective matrix (_11: %.4f -> %.4f, Aspect: %.2f -> %.2f)",
-                                pMatrix->_11, modified._11, matrixAspect, currentAspect);
-                    }
-                }
-
-                return hook.m_pOriginalSetTransform ? hook.m_pOriginalSetTransform(pDevice, State, &modified) : D3D_OK;
-            }
-        }
-        return hook.m_pOriginalSetTransform ? hook.m_pOriginalSetTransform(pDevice, State, pMatrix) : D3D_OK;
-    }
-
-    // Viewport-Korrektur (Slot 40: SetViewport)
-    HRESULT STDMETHODCALLTYPE D3D8Hook::Hooked_SetViewport(IDirect3DDevice8* pDevice, CONST D3DVIEWPORT8* pViewport) {
-        auto& hook = D3D8Hook::Instance();
-        if (hook.m_isBorderless && pViewport && hook.m_screenWidth > 0 && hook.m_screenHeight > 0) {
-            D3DVIEWPORT8 vp = *pViewport;
-            // Falls RenderWare den Viewport auf 800x600 oder einen Sub-Viewport begrenzen will:
-            if (vp.Width <= 800 || vp.Height <= 600 || vp.Width < (DWORD)hook.m_screenWidth || vp.Height < (DWORD)hook.m_screenHeight) {
-                vp.X = 0;
-                vp.Y = 0;
-                vp.Width = (DWORD)hook.m_screenWidth;
-                vp.Height = (DWORD)hook.m_screenHeight;
-                vp.MinZ = 0.0f;
-                vp.MaxZ = 1.0f;
-                return hook.m_pOriginalSetViewport ? hook.m_pOriginalSetViewport(pDevice, &vp) : D3D_OK;
-            }
-        }
-        return hook.m_pOriginalSetViewport ? hook.m_pOriginalSetViewport(pDevice, pViewport) : D3D_OK;
-    }
-
-    // 3. CUTSCENE-BALKEN & 2D HUD VERARBEITUNG
-    HRESULT STDMETHODCALLTYPE D3D8Hook::Hooked_SetVertexShader(IDirect3DDevice8* pDevice, DWORD Handle) {
-        auto& hook = D3D8Hook::Instance();
-        hook.m_currentFVF = Handle;
-        return hook.m_pOriginalSetVertexShader ? hook.m_pOriginalSetVertexShader(pDevice, Handle) : D3D_OK;
-    }
-
-    bool D3D8Hook::Process2DVertices(D3DPRIMITIVETYPE primType, UINT primCount, const void* pInVertices, UINT stride, void* pOutVertices, bool& outDrop) {
-        outDrop = false;
-        if (!pInVertices || stride < 16 || !m_isBorderless || m_screenHeight <= 0 || m_screenWidth <= 0) return false;
-
-        UINT vCount = 0;
-        switch (primType) {
-            case D3DPT_POINTLIST:     vCount = primCount; break;
-            case D3DPT_LINELIST:      vCount = primCount * 2; break;
-            case D3DPT_LINESTRIP:     vCount = primCount + 1; break;
-            case D3DPT_TRIANGLELIST:  vCount = primCount * 3; break;
-            case D3DPT_TRIANGLESTRIP: vCount = primCount + 2; break;
-            case D3DPT_TRIANGLEFAN:   vCount = primCount + 2; break;
-            default: vCount = primCount * 3; break;
-        }
-        if (vCount < 3 || vCount > 2048) return false;
-
-        // Bounding Box der 2D-Vertizes ermitteln
-        float minX = 999999.0f, maxX = -999999.0f;
-        float minY = 999999.0f, maxY = -999999.0f;
-
-        for (UINT i = 0; i < vCount; ++i) {
-            const char* p = reinterpret_cast<const char*>(pInVertices) + (i * stride);
-            float vx = *reinterpret_cast<const float*>(p);
-            float vy = *reinterpret_cast<const float*>(p + 4);
-            if (vx < minX) minX = vx;
-            if (vx > maxX) maxX = vx;
-            if (vy < minY) minY = vy;
-            if (vy > maxY) maxY = vy;
-        }
-
-        // 1. PARKED ELEMENTS CULLING (OFFSCREEN-ASSETS / DER BRAUNE BALLON)
-        // Wenn alle Vertizes im originalen Koordinatenraum X >= 790.0f oder X <= -5.0f liegen:
-        // Das Element wurde von der Engine absichtlich knapp ausserhalb des 4:3-Sichtfelds geschoben.
-        // Verwerfe diesen Draw-Call vollstaendig, damit er im 16:9-Widescreen nicht am Rand erscheint.
-        if (minX >= 790.0f || maxX <= -5.0f) {
-            outDrop = true;
-            return true;
-        }
-
-        // Falls die Vertizes bereits im Zielaufloesungsbereich liegen (> 850 px oder > 650 px), unveraendert zeichnen
-        if (maxX > (float)m_screenWidth * 0.95f && maxY > (float)m_screenHeight * 0.95f) {
-            return false;
-        }
-
-        // =========================================================================
-        // KATEGORIE A: VOLLBILD-POST-PROCESSING-FILTER (ATMOSPHAERE / SKY-TINT / PAUSE-OVERLAY)
-        // =========================================================================
-        // Vollbild-Filter spannen ueber das GESAMTE 800x600 Canvas gleichzeitig (minX/minY <= 10.0f und maxX >= 790.0f und maxY >= 590.0f).
-        // Banner (wie "GELANG NACH OBEN" mit maxY < 500.0f) werden dadurch niemals faelschlicherweise als Vollbildfilter erfasst!
-        bool isFullscreenTint = (minX <= 10.0f && minY <= 10.0f && maxX >= 790.0f && maxY >= 590.0f && (vCount == 4 || vCount == 6));
-        if (isFullscreenTint) {
-            if (pOutVertices) {
-                memcpy(pOutVertices, pInVertices, vCount * stride);
-                for (UINT i = 0; i < vCount; ++i) {
-                    char* p = reinterpret_cast<char*>(pOutVertices) + (i * stride);
-                    float* pX = reinterpret_cast<float*>(p);
-                    float* pY = reinterpret_cast<float*>(p + 4);
-
-                    *pX = ((*pX) / 800.0f) * (float)m_screenWidth;
-                    *pY = ((*pY) / 600.0f) * (float)m_screenHeight;
-
-                    if (*pX >= (float)m_screenWidth - 5.0f) *pX = (float)m_screenWidth;
-                    if (*pX <= 5.0f) *pX = 0.0f;
-                    if (*pY >= (float)m_screenHeight - 5.0f) *pY = (float)m_screenHeight;
-                    if (*pY <= 5.0f) *pY = 0.0f;
-                }
-                outDrop = false;
-                return true;
-            }
-        }
-
-        // =========================================================================
-        // KATEGORIE B: CUTSCENE LETTERBOX-BALKEN (ANIMATIONS- & TRANSITIONS-FILTER)
-        // =========================================================================
-        // Faengt Kinobalken auch waehrend des Einblend-Tweenings (0px bis 100px) zuverlaessig ab
-        bool isFullWidthBar = (minX <= 25.0f && maxX >= 750.0f && (vCount == 4 || vCount == 6));
-        if (isFullWidthBar) {
-            bool isTopBar = (minY <= 2.0f && maxY <= 180.0f);
-            bool isBottomBar = (minY >= 420.0f && maxY >= 598.0f);
-
-            if (isTopBar || isBottomBar) {
-                bool isBlack = true;
-                if (stride >= 20) {
-                    for (UINT i = 0; i < vCount; ++i) {
-                        const char* p = reinterpret_cast<const char*>(pInVertices) + (i * stride);
-                        DWORD color = *reinterpret_cast<const DWORD*>(p + 16);
-                        DWORD r = (color >> 16) & 0xFF;
-                        DWORD g = (color >> 8) & 0xFF;
-                        DWORD b = color & 0xFF;
-                        if (r > 5 || g > 5 || b > 5) {
-                            isBlack = false;
-                            break;
-                        }
-                    }
-                }
-
-                if (isBlack) {
-                    outDrop = true;
-                    static uint32_t s_lastBarDropLog = 0;
-                    if (m_frameCount.load() - s_lastBarDropLog > 300) {
-                        s_lastBarDropLog = (uint32_t)m_frameCount.load();
-                        MAD_LOG("[D3D8:2D] Cutscene %s letterbox bar suppressed (dropped) fuer 16:9 Vollbild.",
-                                isTopBar ? "TOP" : "BOTTOM");
-                    }
-                    return true;
-                }
-            }
-        }
-
-        // =========================================================================
-        // KATEGORIE C: DYNAMISCHES WIDESCREEN-HUD ANCHORING (3 ZONEN)
-        // =========================================================================
-        float scaleY = (float)m_screenHeight / 600.0f;
-        float scaleX = scaleY; // Uniformes Scaling: Icons & UI-Elemente bleiben 1:1 kreisrund
-        float virtual43Width = 800.0f * scaleX;
-        float centerOffsetX = ((float)m_screenWidth - virtual43Width) * 0.5f;
-
-        float origCenterX = (minX + maxX) * 0.5f;
-
-        if (pOutVertices) {
-            memcpy(pOutVertices, pInVertices, vCount * stride);
-
-            if (origCenterX < 320.0f) {
-                // A. ZONE LINKS (origCenterX < 320.0f):
-                // Gesundheitsbalken, Pfoten-Zaehler, Pinguin-Icon / Charakter-Kopf
-                // Verankerung am linken Bildschirmrand
-                for (UINT i = 0; i < vCount; ++i) {
-                    char* p = reinterpret_cast<char*>(pOutVertices) + (i * stride);
-                    float* pX = reinterpret_cast<float*>(p);
-                    float* pY = reinterpret_cast<float*>(p + 4);
-
-                    *pX = (*pX) * scaleX;
-                    *pY = (*pY) * scaleY;
-                }
-            }
-            else if (origCenterX > 520.0f) {
-                // B. ZONE RECHTS (origCenterX > 520.0f):
-                // Alex-Loewenstatue ("51/100"), Muenzen, Sammelobjekte
-                // Verankerung am rechten Bildschirmrand
-                for (UINT i = 0; i < vCount; ++i) {
-                    char* p = reinterpret_cast<char*>(pOutVertices) + (i * stride);
-                    float* pX = reinterpret_cast<float*>(p);
-                    float* pY = reinterpret_cast<float*>(p + 4);
-
-                    float distFromRight = (800.0f - (*pX)) * scaleX;
-                    *pX = (float)m_screenWidth - distFromRight;
-                    *pY = (*pY) * scaleY;
-                }
-            }
-            else {
-                // C. ZONE MITTE (320.0f <= origCenterX <= 520.0f):
-                // Fadenkreuz / Angel-Zielkreis, Missions-Banner oben ("FANG 4 BLAUE FISCHE!"), Interaktions-Prompts
-                // Exakt in der Bildschirmmitte zentriert bleiben
-                for (UINT i = 0; i < vCount; ++i) {
-                    char* p = reinterpret_cast<char*>(pOutVertices) + (i * stride);
-                    float* pX = reinterpret_cast<float*>(p);
-                    float* pY = reinterpret_cast<float*>(p + 4);
-
-                    *pX = centerOffsetX + ((*pX) * scaleX);
-                    *pY = (*pY) * scaleY;
-                }
-            }
-            return true;
-        }
-
-        return false;
-    }
-
-    HRESULT STDMETHODCALLTYPE D3D8Hook::Hooked_DrawPrimitive(IDirect3DDevice8* pDevice, D3DPRIMITIVETYPE PrimitiveType, UINT StartVertex, UINT PrimitiveCount) {
-        auto& hook = D3D8Hook::Instance();
-        DWORD curVS = hook.m_currentFVF;
-        pDevice->GetVertexShader(&curVS);
-
-        if (hook.m_isBorderless && (curVS & D3DFVF_XYZRHW)) {
-            IDirect3DVertexBuffer8* pVB = nullptr;
-            UINT stride = 0;
-            if (SUCCEEDED(pDevice->GetStreamSource(0, &pVB, &stride)) && pVB) {
-                if (stride >= 16) {
-                    UINT vCount = (PrimitiveType == D3DPT_TRIANGLESTRIP || PrimitiveType == D3DPT_TRIANGLEFAN) ? (PrimitiveCount + 2) : (PrimitiveCount * 3);
-                    if (vCount <= 2048) {
-                        BYTE* pLocked = nullptr;
-                        UINT lockSize = (StartVertex + vCount) * stride;
-                        if (SUCCEEDED(pVB->Lock(0, lockSize, &pLocked, D3DLOCK_READONLY))) {
-                            const void* vStart = pLocked + (StartVertex * stride);
-                            bool drop = false;
-                            static thread_local std::vector<char> s_dummy;
-                            if (s_dummy.size() < vCount * stride) s_dummy.resize(vCount * stride + 256);
-                            bool processed = hook.Process2DVertices(PrimitiveType, PrimitiveCount, vStart, stride, s_dummy.data(), drop);
-                            pVB->Unlock();
-                            pVB->Release();
-                            if (drop) {
-                                return D3D_OK;
-                            }
-                            if (processed) {
-                                return hook.m_pOriginalDrawPrimitiveUP ?
-                                    hook.m_pOriginalDrawPrimitiveUP(pDevice, PrimitiveType, PrimitiveCount, s_dummy.data(), stride) : D3D_OK;
-                            }
-                        } else {
-                            pVB->Release();
-                        }
-                    } else {
-                        pVB->Release();
-                    }
-                } else {
-                    pVB->Release();
-                }
-            }
-        }
-        return hook.m_pOriginalDrawPrimitive ? hook.m_pOriginalDrawPrimitive(pDevice, PrimitiveType, StartVertex, PrimitiveCount) : D3D_OK;
-    }
-
-    HRESULT STDMETHODCALLTYPE D3D8Hook::Hooked_DrawIndexedPrimitive(IDirect3DDevice8* pDevice, D3DPRIMITIVETYPE PrimitiveType, UINT minIndex, UINT NumVertices, UINT startIndex, UINT primCount) {
-        auto& hook = D3D8Hook::Instance();
-        DWORD curVS = hook.m_currentFVF;
-        pDevice->GetVertexShader(&curVS);
-
-        if (hook.m_isBorderless && (curVS & D3DFVF_XYZRHW)) {
-            IDirect3DVertexBuffer8* pVB = nullptr;
-            UINT stride = 0;
-            if (SUCCEEDED(pDevice->GetStreamSource(0, &pVB, &stride)) && pVB) {
-                if (stride >= 16 && NumVertices <= 2048) {
-                    BYTE* pLocked = nullptr;
-                    UINT lockSize = (minIndex + NumVertices) * stride;
-                    if (SUCCEEDED(pVB->Lock(0, lockSize, &pLocked, D3DLOCK_READONLY))) {
-                        const void* vStart = pLocked + (minIndex * stride);
-                        bool drop = false;
-                        static thread_local std::vector<char> s_dummy;
-                        if (s_dummy.size() < NumVertices * stride) s_dummy.resize(NumVertices * stride + 256);
-                        bool processed = hook.Process2DVertices(PrimitiveType, primCount, vStart, stride, s_dummy.data(), drop);
-                        pVB->Unlock();
-                        pVB->Release();
-                        if (drop) {
-                            return D3D_OK;
-                        }
-                        if (processed) {
-                            IDirect3DIndexBuffer8* pIB = nullptr;
-                            UINT baseVertex = 0;
-                            if (SUCCEEDED(pDevice->GetIndices(&pIB, &baseVertex)) && pIB) {
-                                D3DINDEXBUFFER_DESC ibDesc = {};
-                                pIB->GetDesc(&ibDesc);
-                                BYTE* pIndexLocked = nullptr;
-                                UINT idxSize = (ibDesc.Format == D3DFMT_INDEX16) ? 2 : 4;
-                                UINT idxCount = (PrimitiveType == D3DPT_TRIANGLESTRIP || PrimitiveType == D3DPT_TRIANGLEFAN) ? (primCount + 2) : (primCount * 3);
-                                UINT ibLockSize = (startIndex + idxCount) * idxSize;
-                                if (SUCCEEDED(pIB->Lock(0, ibLockSize, &pIndexLocked, D3DLOCK_READONLY))) {
-                                    const void* pIdxStart = pIndexLocked + (startIndex * idxSize);
-                                    HRESULT hr = hook.m_pOriginalDrawIndexedPrimitiveUP ?
-                                        hook.m_pOriginalDrawIndexedPrimitiveUP(pDevice, PrimitiveType, 0, NumVertices, primCount, pIdxStart, ibDesc.Format, s_dummy.data(), stride) : D3D_OK;
-                                    pIB->Unlock();
-                                    pIB->Release();
-                                    return hr;
-                                }
-                                pIB->Release();
-                            }
-                        }
-                    } else {
-                        pVB->Release();
-                    }
-                } else {
-                    pVB->Release();
-                }
-            }
-        }
-        return hook.m_pOriginalDrawIndexedPrimitive ? hook.m_pOriginalDrawIndexedPrimitive(pDevice, PrimitiveType, minIndex, NumVertices, startIndex, primCount) : D3D_OK;
-    }
-
-    HRESULT STDMETHODCALLTYPE D3D8Hook::Hooked_DrawPrimitiveUP(IDirect3DDevice8* pDevice, D3DPRIMITIVETYPE PrimitiveType, UINT PrimitiveCount, CONST void* pVertexStreamZeroData, UINT VertexStreamZeroStride) {
-        auto& hook = D3D8Hook::Instance();
-        DWORD curVS = hook.m_currentFVF;
-        pDevice->GetVertexShader(&curVS);
-
-        if (hook.m_isBorderless && pVertexStreamZeroData && (curVS & D3DFVF_XYZRHW) && VertexStreamZeroStride >= 16) {
-            static thread_local std::vector<char> s_vtxBuffer;
-            UINT vCount = (PrimitiveType == D3DPT_TRIANGLESTRIP || PrimitiveType == D3DPT_TRIANGLEFAN) ? (PrimitiveCount + 2) : (PrimitiveCount * 3);
-            if (vCount <= 2048) {
-                size_t reqBytes = vCount * VertexStreamZeroStride;
-                if (s_vtxBuffer.size() < reqBytes) {
-                    s_vtxBuffer.resize(reqBytes + 1024);
-                }
-
-                bool drop = false;
-                if (hook.Process2DVertices(PrimitiveType, PrimitiveCount, pVertexStreamZeroData, VertexStreamZeroStride, s_vtxBuffer.data(), drop)) {
-                    if (drop) {
-                        return D3D_OK;
-                    }
-                    return hook.m_pOriginalDrawPrimitiveUP ? hook.m_pOriginalDrawPrimitiveUP(pDevice, PrimitiveType, PrimitiveCount, s_vtxBuffer.data(), VertexStreamZeroStride) : D3D_OK;
-                }
-            }
-        }
-        return hook.m_pOriginalDrawPrimitiveUP ? hook.m_pOriginalDrawPrimitiveUP(pDevice, PrimitiveType, PrimitiveCount, pVertexStreamZeroData, VertexStreamZeroStride) : D3D_OK;
-    }
-
-    HRESULT STDMETHODCALLTYPE D3D8Hook::Hooked_DrawIndexedPrimitiveUP(IDirect3DDevice8* pDevice, D3DPRIMITIVETYPE PrimitiveType, UINT MinVertexIndex, UINT NumVertexIndices, UINT PrimitiveCount, CONST void* pIndexData, D3DFORMAT IndexDataFormat, CONST void* pVertexStreamZeroData, UINT VertexStreamZeroStride) {
-        auto& hook = D3D8Hook::Instance();
-        DWORD curVS = hook.m_currentFVF;
-        pDevice->GetVertexShader(&curVS);
-
-        if (hook.m_isBorderless && pVertexStreamZeroData && (curVS & D3DFVF_XYZRHW) && VertexStreamZeroStride >= 16) {
-            static thread_local std::vector<char> s_vtxBuffer;
-            UINT vCount = NumVertexIndices;
-            size_t reqBytes = vCount * VertexStreamZeroStride;
-            if (s_vtxBuffer.size() < reqBytes) {
-                s_vtxBuffer.resize(reqBytes + 1024);
-            }
-
-            bool drop = false;
-            if (hook.Process2DVertices(PrimitiveType, PrimitiveCount, pVertexStreamZeroData, VertexStreamZeroStride, s_vtxBuffer.data(), drop)) {
-                if (drop) {
-                    return D3D_OK;
-                }
-                return hook.m_pOriginalDrawIndexedPrimitiveUP ? hook.m_pOriginalDrawIndexedPrimitiveUP(pDevice, PrimitiveType, MinVertexIndex, NumVertexIndices, PrimitiveCount, pIndexData, IndexDataFormat, s_vtxBuffer.data(), VertexStreamZeroStride) : D3D_OK;
-            }
-        }
-        return hook.m_pOriginalDrawIndexedPrimitiveUP ? hook.m_pOriginalDrawIndexedPrimitiveUP(pDevice, PrimitiveType, MinVertexIndex, NumVertexIndices, PrimitiveCount, pIndexData, IndexDataFormat, pVertexStreamZeroData, VertexStreamZeroStride) : D3D_OK;
-    }
 
     LRESULT CALLBACK D3D8Hook::Hooked_GameWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
         return D3D8Hook::Instance().HandleGameWndProc(hWnd, uMsg, wParam, lParam);
@@ -1655,241 +1193,7 @@ namespace MadMultiplayer {
         return D3D8Hook::Instance().HandleConsoleWndProc(hWnd, uMsg, wParam, lParam);
     }
 
-    // 5. RENDERWARE CAMERA BEGINUPDATE HOOK (0x004D70F0)
-    // Synchronisiert viewWindow.x und Frustum-Culling kontinuierlich vor jedem Render-Pass
-    void* __cdecl D3D8Hook::Hooked_RwCameraBeginUpdate(void* camera) {
-        auto& hook = D3D8Hook::Instance();
-        if (hook.m_isBorderless && camera && hook.m_screenHeight > 0) {
-            int projType = *reinterpret_cast<int*>((char*)camera + 0x14);
-            if (projType == 1) { // rwPERSPECTIVE (3D Weltkamera)
-                float targetAspect = (float)hook.m_screenWidth / (float)hook.m_screenHeight;
-                float baseAspect = 4.0f / 3.0f; // 1.333333f
-                if (targetAspect > baseAspect) {
-                    float* pViewWindowX = reinterpret_cast<float*>((char*)camera + 0x68);
-                    float* pViewWindowY = reinterpret_cast<float*>((char*)camera + 0x6C);
-                    float* pRecipX      = reinterpret_cast<float*>((char*)camera + 0x70);
 
-                    if (*pViewWindowY > 0.001f) {
-                        float originalViewWindowX = (*pViewWindowY) * baseAspect;
-                        float targetViewWindowX = originalViewWindowX * (targetAspect / baseAspect);
-
-                        if (fabsf(*pViewWindowX - targetViewWindowX) > 0.0001f) {
-                            *pViewWindowX = targetViewWindowX;
-                            *pRecipX      = 1.0f / targetViewWindowX;
-
-                            // setFrustum (+0x10) aufrufen, um die 6 CPU-Culling Planes neu zu berechnen!
-                            using PFN_SetFrustum = void(__cdecl*)(void*);
-                            PFN_SetFrustum setFrustum = *reinterpret_cast<PFN_SetFrustum*>((char*)camera + 0x10);
-                            if (setFrustum) {
-                                setFrustum(camera);
-                            }
-
-                            static uint32_t s_lastFrustumLog = 0;
-                            if (hook.m_frameCount.load() - s_lastFrustumLog > 300) {
-                                s_lastFrustumLog = (uint32_t)hook.m_frameCount.load();
-                                MAD_LOG("[RW:CAMERA] Frustum culling planes recomputed for 16:9 Hor+ Widescreen: viewWindow.x=%.4f (Aspect: %.2f)",
-                                        targetViewWindowX, targetAspect);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        return s_pOriginalRwCameraBeginUpdate ? s_pOriginalRwCameraBeginUpdate(camera) : nullptr;
-    }
-
-    // 6. 2D UI RENDER DISPATCH HOOK (RenderWare Pipeline Dispatch Table 0x0060B080 / 0x0060B0B8)
-    // Fängt alle 2D-Sprites & HUD-Quads direkt an der Quelle vor der GPU-Pufferung ab!
-    int __cdecl D3D8Hook::Hooked_Render2DQuads(int primType, void* pVertices, int numVertices) {
-        auto& hook = D3D8Hook::Instance();
-        if (!hook.m_isBorderless || hook.m_screenWidth <= 0 || hook.m_screenHeight <= 0 || !pVertices || numVertices <= 0) {
-            return s_pOriginalRender2DQuads ? s_pOriginalRender2DQuads(primType, pVertices, numVertices) : 1;
-        }
-
-        uintptr_t gameBase = (uintptr_t)GetModuleHandleA(nullptr);
-        void** ppElemHolder = reinterpret_cast<void**>(gameBase + 0x00232038); // 0x632038
-        void* elem = nullptr;
-        if (ppElemHolder && !IsBadReadPtr(ppElemHolder, sizeof(void*)) && *ppElemHolder) {
-            void* holder = *ppElemHolder;
-            if (holder && !IsBadReadPtr(holder, 0x70)) {
-                elem = *reinterpret_cast<void**>((char*)holder + 0x60);
-            }
-        }
-        // KRITISCHER FIX: Falls [0x632038] NULL ist, rufe 0x004E2640 auf, genau wie es 0x004FEFB0 intern tut!
-        if (!elem) {
-            using PFN_GetCurElem = void*(__cdecl*)();
-            PFN_GetCurElem getCurElem = reinterpret_cast<PFN_GetCurElem>(gameBase + 0x000E2640);
-            if (getCurElem) {
-                elem = getCurElem();
-            }
-        }
-
-        int16_t* pElemX = nullptr;
-        int16_t* pElemY = nullptr;
-        int16_t origElemX = 0;
-        int16_t origElemY = 0;
-
-        if (elem && !IsBadReadPtr(elem, 0x30)) {
-            pElemX = reinterpret_cast<int16_t*>((char*)elem + 0x1c);
-            pElemY = reinterpret_cast<int16_t*>((char*)elem + 0x1e);
-            origElemX = *pElemX;
-            origElemY = *pElemY;
-        }
-
-        static uint32_t s_lastUiLog = 0;
-        if (hook.m_frameCount.load() - s_lastUiLog > 300) {
-            s_lastUiLog = (uint32_t)hook.m_frameCount.load();
-            MAD_LOG("[D3D8:2D-UI] Hooked_Render2DQuads: elem=%p, origX=%d, origY=%d, vCount=%d",
-                    elem, origElemX, origElemY, numVertices);
-        }
-
-        // 1. PARKED ELEMENTS CULLING:
-        // Elemente am Rand (X >= 790 oder X <= -5) verwerfen (z.B. brauner Ballon)
-        if (origElemX >= 790 || origElemX <= -5) {
-            return 1;
-        }
-
-        float scaleY = (float)hook.m_screenHeight / 600.0f;
-        float scaleX = scaleY;
-        float virtual43Width = 800.0f * scaleX;
-        float centerOffsetX = ((float)hook.m_screenWidth - virtual43Width) * 0.5f;
-
-        // Wenn Element nicht 0,0 ist (normale HUD-Elemente: Leben, Alex-Statue, Pause-Menü etc.)
-        if (origElemX != 0 || origElemY != 0) {
-            int16_t newElemX = origElemX;
-            int16_t newElemY = (int16_t)(origElemY * scaleY);
-
-            if (origElemX < 320) {
-                // Zone Links (Marty, Leben, Pfoten): Am linken Bildschirmrand verankern
-                newElemX = (int16_t)(origElemX * scaleX);
-            }
-            else if (origElemX > 520) {
-                // Zone Rechts (Alex 43/100, Münzen, Statuen): Am rechten Bildschirmrand verankern
-                float distFromRight = (800.0f - (float)origElemX) * scaleX;
-                newElemX = (int16_t)((float)hook.m_screenWidth - distFromRight);
-            }
-            else {
-                // Zone Mitte (Pause-Menü, Banner, Prompts): Exakt im Zentrum
-                newElemX = (int16_t)(centerOffsetX + ((float)origElemX * scaleX));
-            }
-
-            if (pElemX && pElemY) {
-                *pElemX = newElemX;
-                *pElemY = newElemY;
-            }
-
-            // Lokale Vertizes des Sprites uniform skalieren (scaleX, scaleY)
-            // Vertizes: float x, y, z, rhw; DWORD color; float u, v; (28 Bytes Stride)
-            static thread_local std::vector<char> s_vtxCopy;
-            size_t reqBytes = (size_t)numVertices * 28;
-            if (s_vtxCopy.size() < reqBytes) {
-                s_vtxCopy.resize(reqBytes + 256);
-            }
-            memcpy(s_vtxCopy.data(), pVertices, reqBytes);
-
-            for (int i = 0; i < numVertices; ++i) {
-                char* p = s_vtxCopy.data() + (i * 28);
-                float* pVx = reinterpret_cast<float*>(p);
-                float* pVy = reinterpret_cast<float*>(p + 4);
-                *pVx *= scaleX;
-                *pVy *= scaleY;
-            }
-
-            int result = s_pOriginalRender2DQuads ? s_pOriginalRender2DQuads(primType, s_vtxCopy.data(), numVertices) : 1;
-
-            if (pElemX && pElemY) {
-                *pElemX = origElemX;
-                *pElemY = origElemY;
-            }
-
-            return result;
-        }
-
-        // Wenn origElemX == 0 && origElemY == 0: Pruefe Bounding Box der Vertizes
-        float minX = 999999.0f, maxX = -999999.0f;
-        float minY = 999999.0f, maxY = -999999.0f;
-        for (int i = 0; i < numVertices; ++i) {
-            const char* p = reinterpret_cast<const char*>(pVertices) + (i * 28);
-            float vx = *reinterpret_cast<const float*>(p);
-            float vy = *reinterpret_cast<const float*>(p + 4);
-            if (vx < minX) minX = vx;
-            if (vx > maxX) maxX = vx;
-            if (vy < minY) minY = vy;
-            if (vy > maxY) maxY = vy;
-        }
-
-        // Parked Elements Bounding Box Drop
-        if (minX >= 790.0f || maxX <= -5.0f) {
-            return 1;
-        }
-
-        // Letterbox-Balken abfangen
-        if (minX <= 25.0f && maxX >= 750.0f && (numVertices == 4 || numVertices == 6)) {
-            bool isTopBar = (minY <= 2.0f && maxY <= 180.0f);
-            bool isBottomBar = (minY >= 420.0f && maxY >= 598.0f);
-            if (isTopBar || isBottomBar) {
-                return 1;
-            }
-        }
-
-        // Fullscreen Tint abfangen
-        if (minX <= 10.0f && minY <= 10.0f && maxX >= 790.0f && maxY >= 590.0f) {
-            static thread_local std::vector<char> s_vtxCopy;
-            size_t reqBytes = (size_t)numVertices * 28;
-            if (s_vtxCopy.size() < reqBytes) {
-                s_vtxCopy.resize(reqBytes + 256);
-            }
-            memcpy(s_vtxCopy.data(), pVertices, reqBytes);
-            for (int i = 0; i < numVertices; ++i) {
-                char* p = s_vtxCopy.data() + (i * 28);
-                float* pVx = reinterpret_cast<float*>(p);
-                float* pVy = reinterpret_cast<float*>(p + 4);
-                *pVx = ((*pVx) / 800.0f) * (float)hook.m_screenWidth;
-                *pVy = ((*pVy) / 600.0f) * (float)hook.m_screenHeight;
-            }
-            return s_pOriginalRender2DQuads ? s_pOriginalRender2DQuads(primType, s_vtxCopy.data(), numVertices) : 1;
-        }
-
-        // Absolute Koordinaten (z.B. Text-Glyphen bei origElemX == 0)
-        float elemCenterX = (minX + maxX) * 0.5f;
-        static thread_local std::vector<char> s_vtxCopy;
-        size_t reqBytes = (size_t)numVertices * 28;
-        if (s_vtxCopy.size() < reqBytes) {
-            s_vtxCopy.resize(reqBytes + 256);
-        }
-        memcpy(s_vtxCopy.data(), pVertices, reqBytes);
-
-        if (elemCenterX < 320.0f) {
-            for (int i = 0; i < numVertices; ++i) {
-                char* p = s_vtxCopy.data() + (i * 28);
-                float* pVx = reinterpret_cast<float*>(p);
-                float* pVy = reinterpret_cast<float*>(p + 4);
-                *pVx = (*pVx) * scaleX;
-                *pVy = (*pVy) * scaleY;
-            }
-        }
-        else if (elemCenterX > 520.0f) {
-            for (int i = 0; i < numVertices; ++i) {
-                char* p = s_vtxCopy.data() + (i * 28);
-                float* pVx = reinterpret_cast<float*>(p);
-                float* pVy = reinterpret_cast<float*>(p + 4);
-                float distFromRight = (800.0f - (*pVx)) * scaleX;
-                *pVx = (float)hook.m_screenWidth - distFromRight;
-                *pVy = (*pVy) * scaleY;
-            }
-        }
-        else {
-            for (int i = 0; i < numVertices; ++i) {
-                char* p = s_vtxCopy.data() + (i * 28);
-                float* pVx = reinterpret_cast<float*>(p);
-                float* pVy = reinterpret_cast<float*>(p + 4);
-                *pVx = centerOffsetX + ((*pVx) * scaleX);
-                *pVy = (*pVy) * scaleY;
-            }
-        }
-
-        return s_pOriginalRender2DQuads ? s_pOriginalRender2DQuads(primType, s_vtxCopy.data(), numVertices) : 1;
-    }
 
     // 4. IAT Hook fuer GetCursorPos: Konvertiert absolute Bildschirmkoordinaten
     // in echte Client-Koordinaten und mappt diese auf den zentrierten Menue-Bereich

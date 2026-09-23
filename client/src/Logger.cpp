@@ -34,7 +34,35 @@ namespace MadMultiplayer {
         Shutdown();
     }
 
+    void Logger::InitConsole()
+    {
+        if (AllocConsole())
+        {
+            FILE* fpDummy;
+            freopen_s(&fpDummy, "CONOUT$", "w", stdout);
+            freopen_s(&fpDummy, "CONOUT$", "w", stderr);
+            freopen_s(&fpDummy, "CONIN$", "r", stdin);
+            
+            SetConsoleTitleA("Madagascar (2005) - Multiplayer Client Debug Console");
+
+            HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+            if (hOut != INVALID_HANDLE_VALUE) {
+                DWORD mode = 0;
+                if (GetConsoleMode(hOut, &mode)) {
+                    SetConsoleMode(hOut, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+                }
+            }
+            
+            HWND hConsole = GetConsoleWindow();
+            if (hConsole) {
+                ShowWindow(hConsole, SW_SHOW);
+                BringWindowToTop(hConsole);
+            }
+        }
+    }
+
     void Logger::Initialize() {
+        InitConsole();
         std::lock_guard<std::mutex> lock(m_mutex);
         if (m_initialized) return;
 
