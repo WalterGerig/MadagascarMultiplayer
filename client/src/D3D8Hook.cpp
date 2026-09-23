@@ -1,7 +1,9 @@
-#include "../include/D3D8Hook.h"
-#include "../include/Logger.h"
-#include "../include/Config.h"
-#include "../include/CheatManager.h"
+#include "D3D8Hook.h"
+#include "Logger.h"
+#include "Config.h"
+#include "CheatManager.h"
+#include <cstdio>
+#include <cstring>
 #include <cmath>
 #include "../vendor/imgui/imgui.h"
 #include "../vendor/imgui/imgui_impl_win32.h"
@@ -10,6 +12,20 @@
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 namespace MadMultiplayer {
+
+    bool g_bUIModeActive = false;
+
+    void ToggleUIMode() {
+        D3D8Hook::Instance().ToggleUIMode();
+    }
+
+    void SetUIMode(bool active) {
+        D3D8Hook::Instance().SetUIMode(active);
+    }
+
+    bool IsUIModeActive() {
+        return g_bUIModeActive;
+    }
 
     static bool g_bRenderedThisFrame = false;
 
@@ -109,6 +125,11 @@ namespace MadMultiplayer {
         pDevice->SetViewport(&b.viewport);
     }
 
+    D3D8Hook::PFN_GetCursorPos D3D8Hook::s_pOriginalGetCursorPos = nullptr;
+    D3D8Hook::PFN_Render2DQuads D3D8Hook::s_pOriginalRender2DQuads = nullptr;
+    D3D8Hook::PFN_RwCameraBeginUpdate D3D8Hook::s_pOriginalRwCameraBeginUpdate = nullptr;
+    static uint8_t s_rwCameraBeginUpdateTrampoline[32] = { 0 };
+
     D3D8Hook& D3D8Hook::Instance() {
         static D3D8Hook instance;
         return instance;
@@ -123,21 +144,6 @@ namespace MadMultiplayer {
         ::SetCursor(::LoadCursorA(nullptr, MAKEINTRESOURCEA(32512))); // IDC_ARROW
     }
 
-    // Globale Zustandsvariable fuer strikte modale Eingabe-Isolation (F2)
-    bool g_bUIModeActive = false;
-
-    void ToggleUIMode() {
-        D3D8Hook::Instance().ToggleUIMode();
-    }
-
-    void SetUIMode(bool active) {
-        D3D8Hook::Instance().SetUIMode(active);
-    }
-
-    bool IsUIModeActive() {
-        return g_bUIModeActive;
-    }
-
     // F3: Overlay-Sichtbarkeit ein-/ausblenden
     void D3D8Hook::ToggleOverlayVisibility() {
         static DWORD s_lastF3Tick = 0;
@@ -150,48 +156,47 @@ namespace MadMultiplayer {
         MAD_LOG("[D3D8Hook] Overlay Sichtbarkeit geaendert -> %s (Taste F3)", visible ? "SICHTBAR" : "VERSTECKT");
     }
 
-    // F2: UI-Modus umschalten (UI-Klicks vs. Gameplay-Kamerasteuerung)
-    void D3D8Hook::ToggleUIMode() {
+    // F2: Maus-Modus umschalten (UI-Klicks vs. Gameplay-Kamerasteuerung)
+    void D3D8Hook::ToggleMouseMode() {
         static DWORD s_lastF2Tick = 0;
         DWORD now = GetTickCount();
         if (now - s_lastF2Tick < 150) return;
         s_lastF2Tick = now;
 
-        SetUIMode(!g_bUIModeActive);
-    }
-
-    void D3D8Hook::ToggleMouseMode() {
-        ToggleUIMode();
-    }
-
-    void D3D8Hook::SetUIMode(bool uiMouseMode) {
-        g_bUIModeActive = uiMouseMode;
-        m_mouseInputMode.store(uiMouseMode);
-        MAD_LOG("[D3D8Hook] Eingabe-Modus geaendert -> %s (Taste F2)", 
-                uiMouseMode ? "UI-BEDIENUNG (Cursor frei, Game-Input blockiert)" : "GAMEPLAY-MODUS (Cursor im Spiel gefangen)");
-        UpdateMouseCapture();
+        SetMouseMode(!m_mouseInputMode.load());
     }
 
     void D3D8Hook::SetMouseMode(bool uiMouseMode) {
-        SetUIMode(uiMouseMode);
+        g_bUIModeActive = uiMouseMode;
+        m_mouseInputMode.store(uiMouseMode);
+        MAD_LOG("[D3D8Hook] Maus-Modus geaendert -> %s (Taste F2)", 
+                uiMouseMode ? "UI-BEDIENUNG (Cursor frei, Game-Input blockiert)" : "GAMEPLAY-MODUS (Cursor im Spiel gefangen)");
+        UpdateMouseCapture();
     }
 
     void D3D8Hook::UpdateMouseCapture() {
         HWND hWnd = m_hGameWindow;
         if (!hWnd) hWnd = FindWindowA("RWSConsoleD3D8", nullptr);
 
-        if (g_bUIModeActive) {
-            // Zustand A: UI-Bedienmodus (F2 aktiv)
-            // Cursor vollstaendig freigeben und sichtbar schalten
+        bool isMenuOrPaused = m_mouseInputMode.load();
+        if (m_pTransformStore) {
+            PlayerTransform t = m_pTransformStore->Get();
+            if (!t.isValid || t.isPaused) {
+                isMenuOrPaused = true;
+            }
+        }
+
+        if (isMenuOrPaused) {
+            // Zustand A: UI-Bedienmodus oder Pause/Hauptmenü (Cursor frei, KEIN ClipCursor!)
             ::ClipCursor(nullptr);
             ::SetCursor(::LoadCursorA(nullptr, MAKEINTRESOURCEA(32512))); // IDC_ARROW
             while (::ShowCursor(TRUE) < 0);
 
             if (m_imguiInitialized.load()) {
-                ImGui::GetIO().MouseDrawCursor = true;
+                ImGui::GetIO().MouseDrawCursor = false;
             }
         } else {
-            // Zustand B: Gameplay-Modus (F2 inaktiv)
+            // Zustand B: Aktiver 3D-Gameplay-Modus (F2 inaktiv, nicht pausiert)
             // Cursor ausblenden und im Client-Bereich des Spielfensters fesseln
             if (m_imguiInitialized.load()) {
                 ImGui::GetIO().MouseDrawCursor = false;
@@ -200,8 +205,15 @@ namespace MadMultiplayer {
 
             if (hWnd && GetForegroundWindow() == hWnd) {
                 RECT rc = {};
-                ::GetClientRect(hWnd, &rc);
-                ::MapWindowPoints(hWnd, nullptr, reinterpret_cast<LPPOINT>(&rc), 2);
+                if (m_isBorderless && m_screenWidth > 0 && m_screenHeight > 0) {
+                    rc.left = 0;
+                    rc.top = 0;
+                    rc.right = m_screenWidth;
+                    rc.bottom = m_screenHeight;
+                } else {
+                    ::GetClientRect(hWnd, &rc);
+                    ::MapWindowPoints(hWnd, nullptr, reinterpret_cast<LPPOINT>(&rc), 2);
+                }
                 ::ClipCursor(&rc);
             }
         }
@@ -217,6 +229,8 @@ namespace MadMultiplayer {
                      ((GetAsyncKeyState(VK_F2) & 0x8000) != 0);
         if (curF2 && !prevF2) {
             ToggleMouseMode();
+            MAD_LOG("[Hotkey] F2 betätigt -> Neuer Maus-Modus: %s", 
+                    m_mouseInputMode.load() ? "UI-BEDIENUNG (Frei)" : "GAMEPLAY (Gefangen)");
         }
         prevF2 = curF2;
 
@@ -227,6 +241,8 @@ namespace MadMultiplayer {
                      ((GetAsyncKeyState(VK_INSERT) & 0x8000) != 0);
         if (curF3 && !prevF3) {
             ToggleOverlayVisibility();
+            MAD_LOG("[Hotkey] F3 betätigt -> Overlay-Sichtbarkeit: %s", 
+                    m_showOverlay.load() ? "SICHTBAR" : "AUSGEBLENDET");
         }
         prevF3 = curF3;
 
@@ -236,16 +252,30 @@ namespace MadMultiplayer {
                     (cfg.keyToggleWidescreen == 57 && ((GetAsyncKeyState(VK_NUMPAD9) & 0x8000) != 0));
         if (cur9 && !prev9) {
             ToggleBorderlessWindowed();
+            MAD_LOG("[Hotkey] Taste 9 betätigt -> Widescreen-Modus: %s (%dx%d)", 
+                    m_isBorderless ? "BORDERLESS 16:9" : "FENSTER 4:3", m_screenWidth, m_screenHeight);
         }
         prev9 = cur9;
     }
 
-    // 1. RENDERWARE FRUSTUM CULLING BEHEBEN (OBJEKTE PLOPPEN AM RAND NICHT MEHR WEG)
+    // 4. RENDERWARE CPU-SIDE FRUSTUM CULLING FIX (OBJECT POP-IN AT HORIZONTAL EDGES)
     void D3D8Hook::UpdateRenderWareCameraFrustum() {
         if (!m_isBorderless || m_screenHeight <= 0) return;
 
         uintptr_t gameBase = (uintptr_t)GetModuleHandleA(nullptr);
         if (!gameBase) return;
+
+        // 1. Game.exe interne Aufloesungs-Globals (0x0062a5c8 & 0x0062a5cc) synchronisieren
+        int* pGameWidth  = reinterpret_cast<int*>(gameBase + 0x0022A5C8);
+        int* pGameHeight = reinterpret_cast<int*>(gameBase + 0x0022A5CC);
+        if (!IsBadWritePtr(pGameWidth, sizeof(int)) && !IsBadWritePtr(pGameHeight, sizeof(int))) {
+            if (*pGameWidth != m_screenWidth || *pGameHeight != m_screenHeight) {
+                *pGameWidth  = m_screenWidth;
+                *pGameHeight = m_screenHeight;
+                MAD_LOG("[RW:GLOBALS] Synchronized Game.exe resolution globals -> %dx%d (0x%p, 0x%p)",
+                        m_screenWidth, m_screenHeight, (void*)pGameWidth, (void*)pGameHeight);
+            }
+        }
 
         // 0x0022AC18 enthaelt den globalen RwGlobals-Zeiger
         uintptr_t* ppRwGlobals = reinterpret_cast<uintptr_t*>(gameBase + 0x0022AC18);
@@ -258,25 +288,68 @@ namespace MadMultiplayer {
         void* curCamera = *reinterpret_cast<void**>(pRwGlobals);
         if (!curCamera || IsBadReadPtr(curCamera, 0x88)) return;
 
-        float aspect = (float)m_screenWidth / (float)m_screenHeight;
+        // 2. RwRaster FrameBuffer (+0x60) & ZBuffer (+0x64) Dimensionen synchronisieren
+        void** ppFrameBuffer = reinterpret_cast<void**>((char*)curCamera + 0x60);
+        void** ppZBuffer     = reinterpret_cast<void**>((char*)curCamera + 0x64);
+
+        if (ppFrameBuffer && *ppFrameBuffer && !IsBadWritePtr(*ppFrameBuffer, 0x34)) {
+            int* pFBWidth  = reinterpret_cast<int*>((char*)*ppFrameBuffer + 0x0C);
+            int* pFBHeight = reinterpret_cast<int*>((char*)*ppFrameBuffer + 0x10);
+            int* pOrigW    = reinterpret_cast<int*>((char*)*ppFrameBuffer + 0x28);
+            int* pOrigH    = reinterpret_cast<int*>((char*)*ppFrameBuffer + 0x2C);
+            if (*pFBWidth != m_screenWidth || *pFBHeight != m_screenHeight) {
+                *pFBWidth  = m_screenWidth;
+                *pFBHeight = m_screenHeight;
+                *pOrigW    = m_screenWidth;
+                *pOrigH    = m_screenHeight;
+            }
+        }
+
+        if (ppZBuffer && *ppZBuffer && !IsBadWritePtr(*ppZBuffer, 0x34)) {
+            int* pZBWidth  = reinterpret_cast<int*>((char*)*ppZBuffer + 0x0C);
+            int* pZBHeight = reinterpret_cast<int*>((char*)*ppZBuffer + 0x10);
+            int* pOrigW    = reinterpret_cast<int*>((char*)*ppZBuffer + 0x28);
+            int* pOrigH    = reinterpret_cast<int*>((char*)*ppZBuffer + 0x2C);
+            if (*pZBWidth != m_screenWidth || *pZBHeight != m_screenHeight) {
+                *pZBWidth  = m_screenWidth;
+                *pZBHeight = m_screenHeight;
+                *pOrigW    = m_screenWidth;
+                *pOrigH    = m_screenHeight;
+            }
+        }
+
+        float targetAspect = (float)m_screenWidth / (float)m_screenHeight;
         float baseAspect = 4.0f / 3.0f; // 1.333333f
 
-        if (aspect > baseAspect) {
+        if (targetAspect > baseAspect) {
             float* pViewWindowX = reinterpret_cast<float*>((char*)curCamera + 0x68);
             float* pViewWindowY = reinterpret_cast<float*>((char*)curCamera + 0x6C);
             float* pRecipX      = reinterpret_cast<float*>((char*)curCamera + 0x70);
 
             if (*pViewWindowY > 0.001f) {
-                float targetViewWindowX = (*pViewWindowY) * aspect;
-                if (fabs(*pViewWindowX - targetViewWindowX) > 0.001f) {
+                // Frustum-Formel:
+                // aspectMultiplier = targetAspect / (4.0f / 3.0f);
+                // camera->viewWindow.x = originalViewWindowX * aspectMultiplier;
+                float originalViewWindowX = (*pViewWindowY) * baseAspect;
+                float aspectMultiplier = targetAspect / baseAspect;
+                float targetViewWindowX = originalViewWindowX * aspectMultiplier;
+
+                if (fabs(*pViewWindowX - targetViewWindowX) > 0.0001f) {
                     *pViewWindowX = targetViewWindowX;
                     *pRecipX      = 1.0f / targetViewWindowX;
 
-                    // SetFrustum aufrufen (+0x10), um die Frustum-Planes fuer CPU-Culling neu zu berechnen
+                    // SetFrustum (+0x10) aufrufen, um die 6 CPU-Culling Planes neu zu berechnen
                     using PFN_SetFrustum = void(__cdecl*)(void*);
                     PFN_SetFrustum setFrustum = *reinterpret_cast<PFN_SetFrustum*>((char*)curCamera + 0x10);
                     if (setFrustum) {
                         setFrustum(curCamera);
+                    }
+
+                    static uint32_t s_lastFrustumLog = 0;
+                    if (m_frameCount.load() - s_lastFrustumLog > 300) {
+                        s_lastFrustumLog = (uint32_t)m_frameCount.load();
+                        MAD_LOG("[RW:CAMERA] Frustum culling plane expanded: viewWindow.x=%.4f (Aspect: %.2f)",
+                                targetViewWindowX, targetAspect);
                     }
                 }
             }
@@ -418,10 +491,12 @@ namespace MadMultiplayer {
         PFN_SetTransform targetSetTransform = reinterpret_cast<PFN_SetTransform>(vtable[37]);
         PFN_SetViewport targetSetViewport = reinterpret_cast<PFN_SetViewport>(vtable[40]);
         PFN_DrawPrimitive targetDrawPrimitive = reinterpret_cast<PFN_DrawPrimitive>(vtable[70]);
+        PFN_DrawIndexedPrimitive targetDrawIndexedPrimitive = reinterpret_cast<PFN_DrawIndexedPrimitive>(vtable[71]);
         PFN_DrawPrimitiveUP targetDrawPrimitiveUP = reinterpret_cast<PFN_DrawPrimitiveUP>(vtable[72]);
+        PFN_DrawIndexedPrimitiveUP targetDrawIndexedPrimitiveUP = reinterpret_cast<PFN_DrawIndexedPrimitiveUP>(vtable[73]);
         PFN_SetVertexShader targetSetVertexShader = reinterpret_cast<PFN_SetVertexShader>(vtable[76]);
 
-        if (targetPresent == Hooked_Present) {
+        if (targetPresent == Hooked_Present || targetEndScene == Hooked_EndScene) {
             return true;
         }
 
@@ -431,7 +506,9 @@ namespace MadMultiplayer {
         m_pOriginalSetTransform = targetSetTransform;
         m_pOriginalSetViewport = targetSetViewport;
         m_pOriginalDrawPrimitive = targetDrawPrimitive;
+        m_pOriginalDrawIndexedPrimitive = targetDrawIndexedPrimitive;
         m_pOriginalDrawPrimitiveUP = targetDrawPrimitiveUP;
+        m_pOriginalDrawIndexedPrimitiveUP = targetDrawIndexedPrimitiveUP;
         m_pOriginalSetVertexShader = targetSetVertexShader;
 
         DWORD oldProtect = 0;
@@ -447,14 +524,93 @@ namespace MadMultiplayer {
         vtable[37] = reinterpret_cast<void*>(&Hooked_SetTransform);
         vtable[40] = reinterpret_cast<void*>(&Hooked_SetViewport);
         vtable[70] = reinterpret_cast<void*>(&Hooked_DrawPrimitive);
+        vtable[71] = reinterpret_cast<void*>(&Hooked_DrawIndexedPrimitive);
         vtable[72] = reinterpret_cast<void*>(&Hooked_DrawPrimitiveUP);
+        vtable[73] = reinterpret_cast<void*>(&Hooked_DrawIndexedPrimitiveUP);
         vtable[76] = reinterpret_cast<void*>(&Hooked_SetVertexShader);
 
         VirtualProtect(&vtable[14], sizeof(void*) * 65, oldProtect, &oldProtect);
 
+        // IAT Hook auf GetCursorPos in Game.exe installieren (fuer 1:1 Maus-Koordinaten in Menus)
+        uintptr_t gameBase = (uintptr_t)GetModuleHandleA(nullptr);
+        if (gameBase && !s_pOriginalGetCursorPos) {
+            void** ppGetCursorPos = reinterpret_cast<void**>(gameBase + 0x001CA240);
+            if (ppGetCursorPos && !IsBadReadPtr(ppGetCursorPos, sizeof(void*))) {
+                DWORD iatProtect = 0;
+                if (VirtualProtect(ppGetCursorPos, sizeof(void*), PAGE_EXECUTE_READWRITE, &iatProtect)) {
+                    s_pOriginalGetCursorPos = reinterpret_cast<PFN_GetCursorPos>(*ppGetCursorPos);
+                    *ppGetCursorPos = reinterpret_cast<void*>(&Hooked_GetCursorPos);
+                    VirtualProtect(ppGetCursorPos, sizeof(void*), iatProtect, &iatProtect);
+                    MAD_LOG("[D3D8Hook] IAT Hook fuer GetCursorPos (0x%p) erfolgreich aktiv!", (void*)ppGetCursorPos);
+                }
+            }
+        }
+
+        // 1. In-Game Software-Mauszeiger komplett unsichtbar machen (NOP der Render-Calls)
+        // 0x00462FF4 und 0x004636D1 in Game.exe (jeweils 9 Bytes: push reg; call 0x413f90; add esp, 4)
+        if (gameBase) {
+            void* pCursorDraw1 = reinterpret_cast<void*>(gameBase + 0x00062FF4);
+            void* pCursorDraw2 = reinterpret_cast<void*>(gameBase + 0x000636D1);
+
+            DWORD oldProt = 0;
+            if (VirtualProtect(pCursorDraw1, 9, PAGE_EXECUTE_READWRITE, &oldProt)) {
+                memset(pCursorDraw1, 0x90, 9);
+                VirtualProtect(pCursorDraw1, 9, oldProt, &oldProt);
+                MAD_LOG("[D3D8Hook] In-Game Software-Cursor DrawCall #1 an 0x%p erfolgreich deaktiviert (NOP).", pCursorDraw1);
+            }
+            if (VirtualProtect(pCursorDraw2, 9, PAGE_EXECUTE_READWRITE, &oldProt)) {
+                memset(pCursorDraw2, 0x90, 9);
+                VirtualProtect(pCursorDraw2, 9, oldProt, &oldProt);
+                MAD_LOG("[D3D8Hook] In-Game Software-Cursor DrawCall #2 an 0x%p erfolgreich deaktiviert (NOP).", pCursorDraw2);
+            }
+
+            // 2. 2D UI Render-Dispatch Hook installieren (Tabelle 0x60B080, Slot 0x60B0B8)
+            void** pDispatchTableEntry = reinterpret_cast<void**>(gameBase + 0x0020B0B8);
+            if (pDispatchTableEntry && !IsBadReadPtr(pDispatchTableEntry, sizeof(void*)) && !s_pOriginalRender2DQuads) {
+                if (VirtualProtect(pDispatchTableEntry, sizeof(void*), PAGE_EXECUTE_READWRITE, &oldProt)) {
+                    s_pOriginalRender2DQuads = reinterpret_cast<PFN_Render2DQuads>(*pDispatchTableEntry);
+                    *pDispatchTableEntry = reinterpret_cast<void*>(&Hooked_Render2DQuads);
+                    VirtualProtect(pDispatchTableEntry, sizeof(void*), oldProt, &oldProt);
+                    MAD_LOG("[D3D8Hook] 2D UI Render-Dispatch Hook (0x%p -> 0x%p) erfolgreich aktiv!", 
+                            (void*)pDispatchTableEntry, (void*)&Hooked_Render2DQuads);
+                }
+            }
+
+            // 3. RenderWare Camera BeginUpdate Hook (0x004D70F0):
+            // Fängt JEDEN Kamera-Aufruf ab, synchronisiert viewWindow.x auf 16:9 und berechnet die 6 Frustum-Planes neu!
+            // Beseitigt das CPU-seitige Frustum Culling an den Bildschirmrändern (kein Objekt-Pop-In mehr!).
+            void* pCameraBeginUpdate = reinterpret_cast<void*>(gameBase + 0x000D70F0);
+            if (pCameraBeginUpdate && !s_pOriginalRwCameraBeginUpdate) {
+                if (VirtualProtect(s_rwCameraBeginUpdateTrampoline, sizeof(s_rwCameraBeginUpdateTrampoline), PAGE_EXECUTE_READWRITE, &oldProt)) {
+                    // 10 Bytes Original-Code in Trampolin kopieren
+                    memcpy(s_rwCameraBeginUpdateTrampoline, pCameraBeginUpdate, 10);
+                    // JMP zurück zu pCameraBeginUpdate + 10 (0x004D70FA)
+                    s_rwCameraBeginUpdateTrampoline[10] = 0xE9;
+                    uintptr_t jmpBackTarget = (uintptr_t)pCameraBeginUpdate + 10;
+                    uintptr_t jmpBackFrom = (uintptr_t)&s_rwCameraBeginUpdateTrampoline[10] + 5;
+                    *reinterpret_cast<int32_t*>(&s_rwCameraBeginUpdateTrampoline[11]) = (int32_t)(jmpBackTarget - jmpBackFrom);
+
+                    // Zielcode (0x004D70F0) patchen mit JMP zu Hooked_RwCameraBeginUpdate
+                    if (VirtualProtect(pCameraBeginUpdate, 10, PAGE_EXECUTE_READWRITE, &oldProt)) {
+                        uint8_t* pCode = reinterpret_cast<uint8_t*>(pCameraBeginUpdate);
+                        pCode[0] = 0xE9;
+                        uintptr_t hookAddr = (uintptr_t)&Hooked_RwCameraBeginUpdate;
+                        uintptr_t srcAddr = (uintptr_t)pCameraBeginUpdate + 5;
+                        *reinterpret_cast<int32_t*>(&pCode[1]) = (int32_t)(hookAddr - srcAddr);
+                        memset(&pCode[5], 0x90, 5); // 5 NOPs
+                        VirtualProtect(pCameraBeginUpdate, 10, oldProt, &oldProt);
+                        FlushInstructionCache(GetCurrentProcess(), pCameraBeginUpdate, 10);
+
+                        s_pOriginalRwCameraBeginUpdate = reinterpret_cast<PFN_RwCameraBeginUpdate>(&s_rwCameraBeginUpdateTrampoline[0]);
+                        MAD_LOG("[D3D8Hook] RwCameraBeginUpdate (0x%p) erfolgreich mit 16:9 Frustum Culling Hook detoured!", pCameraBeginUpdate);
+                    }
+                }
+            }
+        }
+
         m_initialized.store(true);
         MAD_LOG("[D3D8Hook] DIRECT MEMORY HOOK SUCCESS: D3D8 Device at 0x%p hooked!", (void*)m_pDevice);
-        MAD_LOG("[D3D8Hook] VTable Swapped: Reset(14), Present(15), EndScene(35), SetTransform(37), SetViewport(40), DrawPrim(70), DrawPrimUP(72), SetVS(76)");
+        MAD_LOG("[D3D8Hook] VTable Swapped: Reset(14), EndScene(35), SetTransform(37), SetViewport(40), DrawPrim(70), DrawIndexedPrim(71), DrawPrimUP(72), DrawIndexedPrimUP(73), SetVS(76)");
         return true;
     }
 
@@ -508,6 +664,19 @@ namespace MadMultiplayer {
                 m_pDevice->SetViewport(&vp);
             }
 
+            // Game.exe globale Aufloesungsvariablen (0x0062a5c8 & 0x0062a5cc) sofort aktualisieren
+            uintptr_t gameBase = (uintptr_t)GetModuleHandleA(nullptr);
+            if (gameBase) {
+                int* pGameWidth  = reinterpret_cast<int*>(gameBase + 0x0022A5C8);
+                int* pGameHeight = reinterpret_cast<int*>(gameBase + 0x0022A5CC);
+                if (!IsBadWritePtr(pGameWidth, sizeof(int)) && !IsBadWritePtr(pGameHeight, sizeof(int))) {
+                    *pGameWidth  = screenW;
+                    *pGameHeight = screenH;
+                }
+            }
+
+            UpdateRenderWareCameraFrustum();
+
             MAD_LOG("[Display] Crash-freier Borderless Widescreen (Non-Reset) per Taste 9 aktiviert! (%dx%d an Pos %d,%d)", 
                     screenW, screenH, posX, posY);
         } else {
@@ -529,6 +698,16 @@ namespace MadMultiplayer {
                 vp.MinZ = 0.0f;
                 vp.MaxZ = 1.0f;
                 m_pDevice->SetViewport(&vp);
+            }
+
+            uintptr_t gameBase = (uintptr_t)GetModuleHandleA(nullptr);
+            if (gameBase) {
+                int* pGameWidth  = reinterpret_cast<int*>(gameBase + 0x0022A5C8);
+                int* pGameHeight = reinterpret_cast<int*>(gameBase + 0x0022A5CC);
+                if (!IsBadWritePtr(pGameWidth, sizeof(int)) && !IsBadWritePtr(pGameHeight, sizeof(int))) {
+                    *pGameWidth  = w;
+                    *pGameHeight = h;
+                }
             }
 
             MAD_LOG("[Display] Borderless Widescreen deaktiviert, Standardfenster wiederhergestellt (%dx%d).", w, h);
@@ -555,6 +734,42 @@ namespace MadMultiplayer {
             ImGui_ImplWin32_Shutdown();
             ImGui::DestroyContext();
             m_imguiInitialized.store(false);
+        }
+
+        uintptr_t gameBase = (uintptr_t)GetModuleHandleA(nullptr);
+        if (gameBase && s_pOriginalGetCursorPos) {
+            void** ppGetCursorPos = reinterpret_cast<void**>(gameBase + 0x001CA240);
+            if (ppGetCursorPos && !IsBadWritePtr(ppGetCursorPos, sizeof(void*))) {
+                DWORD oldProtect = 0;
+                if (VirtualProtect(ppGetCursorPos, sizeof(void*), PAGE_EXECUTE_READWRITE, &oldProtect)) {
+                    *ppGetCursorPos = reinterpret_cast<void*>(s_pOriginalGetCursorPos);
+                    VirtualProtect(ppGetCursorPos, sizeof(void*), oldProtect, &oldProtect);
+                }
+            }
+            s_pOriginalGetCursorPos = nullptr;
+        }
+
+        if (gameBase && s_pOriginalRender2DQuads) {
+            void** pDispatchTableEntry = reinterpret_cast<void**>(gameBase + 0x0020B0B8);
+            if (pDispatchTableEntry && !IsBadWritePtr(pDispatchTableEntry, sizeof(void*))) {
+                DWORD oldProtect = 0;
+                if (VirtualProtect(pDispatchTableEntry, sizeof(void*), PAGE_EXECUTE_READWRITE, &oldProtect)) {
+                    *pDispatchTableEntry = reinterpret_cast<void*>(s_pOriginalRender2DQuads);
+                    VirtualProtect(pDispatchTableEntry, sizeof(void*), oldProtect, &oldProtect);
+                }
+            }
+            s_pOriginalRender2DQuads = nullptr;
+        }
+
+        if (gameBase && s_pOriginalRwCameraBeginUpdate) {
+            void* pCameraBeginUpdate = reinterpret_cast<void*>(gameBase + 0x000D70F0);
+            DWORD oldProt = 0;
+            if (VirtualProtect(pCameraBeginUpdate, 10, PAGE_EXECUTE_READWRITE, &oldProt)) {
+                memcpy(pCameraBeginUpdate, s_rwCameraBeginUpdateTrampoline, 10);
+                VirtualProtect(pCameraBeginUpdate, 10, oldProt, &oldProt);
+                FlushInstructionCache(GetCurrentProcess(), pCameraBeginUpdate, 10);
+            }
+            s_pOriginalRwCameraBeginUpdate = nullptr;
         }
 
         m_initialized.store(false);
@@ -595,7 +810,24 @@ namespace MadMultiplayer {
         // 4. In-Game Cheat Manager pro Frame aktualisieren
         CheatManager::Instance().Update(m_lastDeltaTime);
 
-        // 5. Lazy Initialization von ImGui beim ersten echten Present-Aufruf
+        // 5. Maus-Zustand kontinuierlich überwachen (Pause-Menü vs. 3D-Gameplay vs. F2-UI)
+        static bool s_lastPaused = false;
+        bool isMenuOrPaused = m_mouseInputMode.load();
+        if (m_pTransformStore) {
+            PlayerTransform t = m_pTransformStore->Get();
+            if (!t.isValid || t.isPaused) {
+                isMenuOrPaused = true;
+            }
+        }
+        if (isMenuOrPaused != s_lastPaused) {
+            s_lastPaused = isMenuOrPaused;
+            UpdateMouseCapture();
+        }
+        if (isMenuOrPaused) {
+            ::ClipCursor(nullptr);
+        }
+
+        // 6. Lazy Initialization von ImGui beim ersten echten Present-Aufruf
         if (!m_imguiInitialized.load()) {
             if (!m_hGameWindow) {
                 m_hGameWindow = FindWindowA("RWSConsoleD3D8", nullptr);
@@ -627,7 +859,6 @@ namespace MadMultiplayer {
                 ImGuiIO& io = ImGui::GetIO();
                 io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
-                ImGui::StyleColorsDark();
                 ImGuiStyle& style = ImGui::GetStyle();
                 style.WindowRounding = 6.0f;
                 style.FrameRounding = 4.0f;
@@ -643,7 +874,7 @@ namespace MadMultiplayer {
             }
         }
 
-        // 6. STRICT FRAME GATE & COMPLETE D3D8 STATE PRESERVATION:
+        // 7. STRICT FRAME GATE & COMPLETE D3D8 STATE PRESERVATION:
         // Rendern NUR wenn m_showOverlay aktiv ist - Exakt 1x pro Present auf den Backbuffer!
         if (m_imguiInitialized.load() && m_showOverlay.load() && !g_bRenderedThisFrame) {
             D3D8StateBackup backup{};
@@ -821,7 +1052,7 @@ namespace MadMultiplayer {
         ImGui::End();
     }
 
-    // MANDATORY WNDPROC QUARANTINE & MODAL INPUT ISOLATION
+    // SICHERES MOUSE-UNLOCK & WNDPROC HOOKING
     LRESULT D3D8Hook::HandleGameWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
         // 1. WM_SETCURSOR: Im UI-Bedienmodus Cursor anzeigen & freigeben
         if (uMsg == WM_SETCURSOR) {
@@ -859,7 +1090,6 @@ namespace MadMultiplayer {
 
             // Block gameplay movement keys (WASD, Space, etc.) while UI is open:
             if (uMsg == WM_KEYDOWN || uMsg == WM_KEYUP || uMsg == WM_CHAR) {
-                // Only swallow if ImGui wants text input or to prevent Marty jumping:
                 return 0;
             }
         }
@@ -879,19 +1109,30 @@ namespace MadMultiplayer {
             }
         }
 
-        // 3. UI-Maus-Offset im Pausenmenue beheben (Widescreen Mouse Scaling)
-        if (m_isBorderless && !g_bUIModeActive && m_screenWidth > 0 && m_screenHeight > 0) {
-            if (uMsg == WM_MOUSEMOVE || uMsg == WM_LBUTTONDOWN || uMsg == WM_LBUTTONUP ||
-                uMsg == WM_RBUTTONDOWN || uMsg == WM_RBUTTONUP || uMsg == WM_MBUTTONDOWN || uMsg == WM_MBUTTONUP) {
-                short origX = (short)LOWORD(lParam);
-                short origY = (short)HIWORD(lParam);
-                short scaledX = (short)((float)origX * (800.0f / (float)m_screenWidth));
-                short scaledY = (short)((float)origY * (600.0f / (float)m_screenHeight));
-                lParam = MAKELPARAM(scaledX, scaledY);
+        bool isMenuOrPaused = m_mouseInputMode.load();
+        if (m_pTransformStore) {
+            PlayerTransform t = m_pTransformStore->Get();
+            if (!t.isValid || t.isPaused) {
+                isMenuOrPaused = true;
             }
         }
 
-        // 4. Alt-Tab / Focus Loss
+        // 3. WM_SETCURSOR: Cursor im Menü-, Pause- oder UI-Zustand stets freigeben
+        if (uMsg == WM_SETCURSOR) {
+            if (isMenuOrPaused) {
+                UnlockMouseCursor();
+                return TRUE;
+            }
+        }
+
+        // 4. WM_MOUSEMOVE im Menü/Pause/UI-Modus: Cursor freihalten
+        if (uMsg == WM_MOUSEMOVE || uMsg == WM_NCMOUSEMOVE) {
+            if (isMenuOrPaused || GetForegroundWindow() != m_hGameWindow) {
+                UnlockMouseCursor();
+            }
+        }
+
+        // 5. Alt-Tab / Focus Loss
         if (uMsg == WM_KILLFOCUS || uMsg == WM_ACTIVATEAPP) {
             if (wParam == FALSE) {
                 UnlockMouseCursor();
@@ -900,12 +1141,13 @@ namespace MadMultiplayer {
                     io.ClearEventsQueue();
                     io.AddFocusEvent(false);
                 }
+                MAD_LOG("[WndProc] WM_KILLFOCUS / WM_ACTIVATEAPP -> Maus freigegeben.");
             } else {
                 UpdateMouseCapture();
             }
         }
 
-        // 5. Fenster-Drift Fix beim Draggen
+        // 6. Fenster-Drift Fix beim Draggen
         if (uMsg == WM_SYSCOMMAND) {
             DWORD cmd = (wParam & 0xFFF0);
             if (cmd == SC_MOVE || cmd == SC_SIZE) {
@@ -914,6 +1156,48 @@ namespace MadMultiplayer {
         }
         else if (uMsg == WM_ENTERSIZEMOVE) {
             UnlockMouseCursor();
+        }
+
+        // 7. ImGui Message Handler mit ORIGINALEN PHYSISCHEN Koordinaten bedienen
+        if (m_imguiInitialized.load()) {
+            ImGui_ImplWin32_WndProcHandler(hWnd, uMsg, wParam, lParam);
+
+            // Wenn ImGui sichtbar ist und die Maus aktiv beansprucht: Events fuer ImGui abfangen
+            if (m_showOverlay.load()) {
+                ImGuiIO& io = ImGui::GetIO();
+                if (io.WantCaptureMouse && (uMsg >= WM_MOUSEFIRST && uMsg <= WM_MOUSELAST)) {
+                    return 1;
+                }
+                if (io.WantCaptureKeyboard && (uMsg >= WM_KEYFIRST && uMsg <= WM_KEYLAST)) {
+                    return 1;
+                }
+            }
+        }
+
+        // 6. Maus-Koordinaten fuer Game.exe Menue-Hit-Testing (0x464510 / 0x463640) 1:1 anpassen
+        if (m_isBorderless && m_screenWidth > 0 && m_screenHeight > 0) {
+            if (uMsg == WM_MOUSEMOVE || uMsg == WM_LBUTTONDOWN || uMsg == WM_LBUTTONUP ||
+                uMsg == WM_RBUTTONDOWN || uMsg == WM_RBUTTONUP) {
+                float scaleY = (float)m_screenHeight / 600.0f;
+                float scaleX = scaleY;
+                float virtual43Width = 800.0f * scaleX;
+                float centerOffsetX = ((float)m_screenWidth - virtual43Width) * 0.5f;
+
+                short rawX = (short)LOWORD(lParam);
+                short rawY = (short)HIWORD(lParam);
+
+                float mappedX = ((float)rawX - centerOffsetX) / scaleX;
+                if (mappedX < 0.0f) mappedX = 0.0f;
+                else if (mappedX > 800.0f) mappedX = 800.0f;
+
+                float mappedY = (float)rawY / scaleY;
+                if (mappedY < 0.0f) mappedY = 0.0f;
+                else if (mappedY > 600.0f) mappedY = 600.0f;
+
+                WORD finalX = (WORD)((mappedX / 800.0f) * (float)m_screenWidth);
+                WORD finalY = (WORD)((mappedY / 600.0f) * (float)m_screenHeight);
+                lParam = MAKELPARAM(finalX, finalY);
+            }
         }
 
         return CallWindowProcA(m_pOriginalGameWndProc, hWnd, uMsg, wParam, lParam);
@@ -951,9 +1235,15 @@ namespace MadMultiplayer {
     HRESULT STDMETHODCALLTYPE D3D8Hook::Hooked_Reset(IDirect3DDevice8* pDevice, D3DPRESENT_PARAMETERS* pPresentationParameters) {
         auto& hook = D3D8Hook::Instance();
         hook.OnPreReset(pDevice);
+        MAD_LOG("[D3D8Hook] Device Reset wird ausgefuehrt (BackBuffer: %ux%u)...",
+                pPresentationParameters ? pPresentationParameters->BackBufferWidth : 0,
+                pPresentationParameters ? pPresentationParameters->BackBufferHeight : 0);
         HRESULT hr = hook.m_pOriginalReset ? hook.m_pOriginalReset(pDevice, pPresentationParameters) : D3D_OK;
         if (SUCCEEDED(hr)) {
             hook.OnPostReset(pDevice);
+            MAD_LOG("[D3D8Hook] Device Reset erfolgreich abgeschlossen.");
+        } else {
+            MAD_LOG("[D3D8Hook] Device Reset fehlgeschlagen! HRESULT: 0x%08X", hr);
         }
         return hr;
     }
@@ -966,12 +1256,31 @@ namespace MadMultiplayer {
             D3DMATRIX modified = *pMatrix;
             float currentAspect = (float)hook.m_screenWidth / (float)hook.m_screenHeight;
             float originalAspect = 4.0f / 3.0f; // 1.333333f
-            if (currentAspect > originalAspect) {
-                // Horizontale Skalierung anpassen (Hor+ Modus):
-                // In D3D projection matrix: _11 = cot(fovX / 2) = cot(fovY / 2) / aspect
-                // Skaliere _11 um (4/3) / aspect, um das Seitenverhaeltnis exakt zu entzerren
-                float factor = originalAspect / currentAspect;
-                modified._11 *= factor;
+
+            // Perspective Projection Matrix (3D-Welt Geometrie)
+            // Bei D3D Perspektiv-Matrizen ist _44 stets 0.0f (Ortho-Projektionen werden unberuehrt gelassen)
+            bool isPerspective = (fabsf(modified._44) < 0.001f && fabsf(modified._11) > 0.0001f && fabsf(modified._22) > 0.0001f);
+            if (isPerspective && currentAspect > originalAspect) {
+                // In D3D Perspective gilt: aspect = fabsf(_22 / _11)
+                float matrixAspect = fabsf(modified._22 / modified._11);
+
+                // KRITISCH GEGEN HORIZONTALE VERZERRUNG / DOPPEL-SKALIERUNG:
+                // Falls RenderWare (durch UpdateRenderWareCameraFrustum) die Matrix bereits auf 16:9 aufgebaut hat,
+                // entspricht matrixAspect bereits ~currentAspect (z.B. 1.777f).
+                // Wir wenden aspectCorrectionFactor = (4.0f/3.0f) / currentAspect NUR an,
+                // wenn die Matrix noch das originale 4:3 Seitenverhaeltnis aufweist!
+                if (matrixAspect < currentAspect - 0.05f) {
+                    float factor = originalAspect / currentAspect;
+                    modified._11 *= factor;
+
+                    static uint32_t s_lastPerspLog = 0;
+                    if (hook.m_frameCount.load() - s_lastPerspLog > 300) {
+                        s_lastPerspLog = (uint32_t)hook.m_frameCount.load();
+                        MAD_LOG("[D3D8:PERSP] Scaled 4:3 perspective matrix (_11: %.4f -> %.4f, Aspect: %.2f -> %.2f)",
+                                pMatrix->_11, modified._11, matrixAspect, currentAspect);
+                    }
+                }
+
                 return hook.m_pOriginalSetTransform ? hook.m_pOriginalSetTransform(pDevice, State, &modified) : D3D_OK;
             }
         }
@@ -983,8 +1292,8 @@ namespace MadMultiplayer {
         auto& hook = D3D8Hook::Instance();
         if (hook.m_isBorderless && pViewport && hook.m_screenWidth > 0 && hook.m_screenHeight > 0) {
             D3DVIEWPORT8 vp = *pViewport;
-            // Falls RenderWare den Viewport auf alte 800x600 begrenzen will:
-            if (vp.Width < (DWORD)hook.m_screenWidth || vp.Height < (DWORD)hook.m_screenHeight) {
+            // Falls RenderWare den Viewport auf 800x600 oder einen Sub-Viewport begrenzen will:
+            if (vp.Width <= 800 || vp.Height <= 600 || vp.Width < (DWORD)hook.m_screenWidth || vp.Height < (DWORD)hook.m_screenHeight) {
                 vp.X = 0;
                 vp.Y = 0;
                 vp.Width = (DWORD)hook.m_screenWidth;
@@ -997,44 +1306,327 @@ namespace MadMultiplayer {
         return hook.m_pOriginalSetViewport ? hook.m_pOriginalSetViewport(pDevice, pViewport) : D3D_OK;
     }
 
-    // 3. CUTSCENE-BALKEN (2D LETTERBOX OBEN LINKS ENTFERNEN)
+    // 3. CUTSCENE-BALKEN & 2D HUD VERARBEITUNG
     HRESULT STDMETHODCALLTYPE D3D8Hook::Hooked_SetVertexShader(IDirect3DDevice8* pDevice, DWORD Handle) {
         auto& hook = D3D8Hook::Instance();
         hook.m_currentFVF = Handle;
         return hook.m_pOriginalSetVertexShader ? hook.m_pOriginalSetVertexShader(pDevice, Handle) : D3D_OK;
     }
 
+    bool D3D8Hook::Process2DVertices(D3DPRIMITIVETYPE primType, UINT primCount, const void* pInVertices, UINT stride, void* pOutVertices, bool& outDrop) {
+        outDrop = false;
+        if (!pInVertices || stride < 16 || !m_isBorderless || m_screenHeight <= 0 || m_screenWidth <= 0) return false;
+
+        UINT vCount = 0;
+        switch (primType) {
+            case D3DPT_POINTLIST:     vCount = primCount; break;
+            case D3DPT_LINELIST:      vCount = primCount * 2; break;
+            case D3DPT_LINESTRIP:     vCount = primCount + 1; break;
+            case D3DPT_TRIANGLELIST:  vCount = primCount * 3; break;
+            case D3DPT_TRIANGLESTRIP: vCount = primCount + 2; break;
+            case D3DPT_TRIANGLEFAN:   vCount = primCount + 2; break;
+            default: vCount = primCount * 3; break;
+        }
+        if (vCount < 3 || vCount > 2048) return false;
+
+        // Bounding Box der 2D-Vertizes ermitteln
+        float minX = 999999.0f, maxX = -999999.0f;
+        float minY = 999999.0f, maxY = -999999.0f;
+
+        for (UINT i = 0; i < vCount; ++i) {
+            const char* p = reinterpret_cast<const char*>(pInVertices) + (i * stride);
+            float vx = *reinterpret_cast<const float*>(p);
+            float vy = *reinterpret_cast<const float*>(p + 4);
+            if (vx < minX) minX = vx;
+            if (vx > maxX) maxX = vx;
+            if (vy < minY) minY = vy;
+            if (vy > maxY) maxY = vy;
+        }
+
+        // 1. PARKED ELEMENTS CULLING (OFFSCREEN-ASSETS / DER BRAUNE BALLON)
+        // Wenn alle Vertizes im originalen Koordinatenraum X >= 790.0f oder X <= -5.0f liegen:
+        // Das Element wurde von der Engine absichtlich knapp ausserhalb des 4:3-Sichtfelds geschoben.
+        // Verwerfe diesen Draw-Call vollstaendig, damit er im 16:9-Widescreen nicht am Rand erscheint.
+        if (minX >= 790.0f || maxX <= -5.0f) {
+            outDrop = true;
+            return true;
+        }
+
+        // Falls die Vertizes bereits im Zielaufloesungsbereich liegen (> 850 px oder > 650 px), unveraendert zeichnen
+        if (maxX > (float)m_screenWidth * 0.95f && maxY > (float)m_screenHeight * 0.95f) {
+            return false;
+        }
+
+        // =========================================================================
+        // KATEGORIE A: VOLLBILD-POST-PROCESSING-FILTER (ATMOSPHAERE / SKY-TINT / PAUSE-OVERLAY)
+        // =========================================================================
+        // Vollbild-Filter spannen ueber das GESAMTE 800x600 Canvas gleichzeitig (minX/minY <= 10.0f und maxX >= 790.0f und maxY >= 590.0f).
+        // Banner (wie "GELANG NACH OBEN" mit maxY < 500.0f) werden dadurch niemals faelschlicherweise als Vollbildfilter erfasst!
+        bool isFullscreenTint = (minX <= 10.0f && minY <= 10.0f && maxX >= 790.0f && maxY >= 590.0f && (vCount == 4 || vCount == 6));
+        if (isFullscreenTint) {
+            if (pOutVertices) {
+                memcpy(pOutVertices, pInVertices, vCount * stride);
+                for (UINT i = 0; i < vCount; ++i) {
+                    char* p = reinterpret_cast<char*>(pOutVertices) + (i * stride);
+                    float* pX = reinterpret_cast<float*>(p);
+                    float* pY = reinterpret_cast<float*>(p + 4);
+
+                    *pX = ((*pX) / 800.0f) * (float)m_screenWidth;
+                    *pY = ((*pY) / 600.0f) * (float)m_screenHeight;
+
+                    if (*pX >= (float)m_screenWidth - 5.0f) *pX = (float)m_screenWidth;
+                    if (*pX <= 5.0f) *pX = 0.0f;
+                    if (*pY >= (float)m_screenHeight - 5.0f) *pY = (float)m_screenHeight;
+                    if (*pY <= 5.0f) *pY = 0.0f;
+                }
+                outDrop = false;
+                return true;
+            }
+        }
+
+        // =========================================================================
+        // KATEGORIE B: CUTSCENE LETTERBOX-BALKEN (ANIMATIONS- & TRANSITIONS-FILTER)
+        // =========================================================================
+        // Faengt Kinobalken auch waehrend des Einblend-Tweenings (0px bis 100px) zuverlaessig ab
+        bool isFullWidthBar = (minX <= 25.0f && maxX >= 750.0f && (vCount == 4 || vCount == 6));
+        if (isFullWidthBar) {
+            bool isTopBar = (minY <= 2.0f && maxY <= 180.0f);
+            bool isBottomBar = (minY >= 420.0f && maxY >= 598.0f);
+
+            if (isTopBar || isBottomBar) {
+                bool isBlack = true;
+                if (stride >= 20) {
+                    for (UINT i = 0; i < vCount; ++i) {
+                        const char* p = reinterpret_cast<const char*>(pInVertices) + (i * stride);
+                        DWORD color = *reinterpret_cast<const DWORD*>(p + 16);
+                        DWORD r = (color >> 16) & 0xFF;
+                        DWORD g = (color >> 8) & 0xFF;
+                        DWORD b = color & 0xFF;
+                        if (r > 5 || g > 5 || b > 5) {
+                            isBlack = false;
+                            break;
+                        }
+                    }
+                }
+
+                if (isBlack) {
+                    outDrop = true;
+                    static uint32_t s_lastBarDropLog = 0;
+                    if (m_frameCount.load() - s_lastBarDropLog > 300) {
+                        s_lastBarDropLog = (uint32_t)m_frameCount.load();
+                        MAD_LOG("[D3D8:2D] Cutscene %s letterbox bar suppressed (dropped) fuer 16:9 Vollbild.",
+                                isTopBar ? "TOP" : "BOTTOM");
+                    }
+                    return true;
+                }
+            }
+        }
+
+        // =========================================================================
+        // KATEGORIE C: DYNAMISCHES WIDESCREEN-HUD ANCHORING (3 ZONEN)
+        // =========================================================================
+        float scaleY = (float)m_screenHeight / 600.0f;
+        float scaleX = scaleY; // Uniformes Scaling: Icons & UI-Elemente bleiben 1:1 kreisrund
+        float virtual43Width = 800.0f * scaleX;
+        float centerOffsetX = ((float)m_screenWidth - virtual43Width) * 0.5f;
+
+        float origCenterX = (minX + maxX) * 0.5f;
+
+        if (pOutVertices) {
+            memcpy(pOutVertices, pInVertices, vCount * stride);
+
+            if (origCenterX < 320.0f) {
+                // A. ZONE LINKS (origCenterX < 320.0f):
+                // Gesundheitsbalken, Pfoten-Zaehler, Pinguin-Icon / Charakter-Kopf
+                // Verankerung am linken Bildschirmrand
+                for (UINT i = 0; i < vCount; ++i) {
+                    char* p = reinterpret_cast<char*>(pOutVertices) + (i * stride);
+                    float* pX = reinterpret_cast<float*>(p);
+                    float* pY = reinterpret_cast<float*>(p + 4);
+
+                    *pX = (*pX) * scaleX;
+                    *pY = (*pY) * scaleY;
+                }
+            }
+            else if (origCenterX > 520.0f) {
+                // B. ZONE RECHTS (origCenterX > 520.0f):
+                // Alex-Loewenstatue ("51/100"), Muenzen, Sammelobjekte
+                // Verankerung am rechten Bildschirmrand
+                for (UINT i = 0; i < vCount; ++i) {
+                    char* p = reinterpret_cast<char*>(pOutVertices) + (i * stride);
+                    float* pX = reinterpret_cast<float*>(p);
+                    float* pY = reinterpret_cast<float*>(p + 4);
+
+                    float distFromRight = (800.0f - (*pX)) * scaleX;
+                    *pX = (float)m_screenWidth - distFromRight;
+                    *pY = (*pY) * scaleY;
+                }
+            }
+            else {
+                // C. ZONE MITTE (320.0f <= origCenterX <= 520.0f):
+                // Fadenkreuz / Angel-Zielkreis, Missions-Banner oben ("FANG 4 BLAUE FISCHE!"), Interaktions-Prompts
+                // Exakt in der Bildschirmmitte zentriert bleiben
+                for (UINT i = 0; i < vCount; ++i) {
+                    char* p = reinterpret_cast<char*>(pOutVertices) + (i * stride);
+                    float* pX = reinterpret_cast<float*>(p);
+                    float* pY = reinterpret_cast<float*>(p + 4);
+
+                    *pX = centerOffsetX + ((*pX) * scaleX);
+                    *pY = (*pY) * scaleY;
+                }
+            }
+            return true;
+        }
+
+        return false;
+    }
+
     HRESULT STDMETHODCALLTYPE D3D8Hook::Hooked_DrawPrimitive(IDirect3DDevice8* pDevice, D3DPRIMITIVETYPE PrimitiveType, UINT StartVertex, UINT PrimitiveCount) {
         auto& hook = D3D8Hook::Instance();
+        DWORD curVS = hook.m_currentFVF;
+        pDevice->GetVertexShader(&curVS);
+
+        if (hook.m_isBorderless && (curVS & D3DFVF_XYZRHW)) {
+            IDirect3DVertexBuffer8* pVB = nullptr;
+            UINT stride = 0;
+            if (SUCCEEDED(pDevice->GetStreamSource(0, &pVB, &stride)) && pVB) {
+                if (stride >= 16) {
+                    UINT vCount = (PrimitiveType == D3DPT_TRIANGLESTRIP || PrimitiveType == D3DPT_TRIANGLEFAN) ? (PrimitiveCount + 2) : (PrimitiveCount * 3);
+                    if (vCount <= 2048) {
+                        BYTE* pLocked = nullptr;
+                        UINT lockSize = (StartVertex + vCount) * stride;
+                        if (SUCCEEDED(pVB->Lock(0, lockSize, &pLocked, D3DLOCK_READONLY))) {
+                            const void* vStart = pLocked + (StartVertex * stride);
+                            bool drop = false;
+                            static thread_local std::vector<char> s_dummy;
+                            if (s_dummy.size() < vCount * stride) s_dummy.resize(vCount * stride + 256);
+                            bool processed = hook.Process2DVertices(PrimitiveType, PrimitiveCount, vStart, stride, s_dummy.data(), drop);
+                            pVB->Unlock();
+                            pVB->Release();
+                            if (drop) {
+                                return D3D_OK;
+                            }
+                            if (processed) {
+                                return hook.m_pOriginalDrawPrimitiveUP ?
+                                    hook.m_pOriginalDrawPrimitiveUP(pDevice, PrimitiveType, PrimitiveCount, s_dummy.data(), stride) : D3D_OK;
+                            }
+                        } else {
+                            pVB->Release();
+                        }
+                    } else {
+                        pVB->Release();
+                    }
+                } else {
+                    pVB->Release();
+                }
+            }
+        }
         return hook.m_pOriginalDrawPrimitive ? hook.m_pOriginalDrawPrimitive(pDevice, PrimitiveType, StartVertex, PrimitiveCount) : D3D_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE D3D8Hook::Hooked_DrawIndexedPrimitive(IDirect3DDevice8* pDevice, D3DPRIMITIVETYPE PrimitiveType, UINT minIndex, UINT NumVertices, UINT startIndex, UINT primCount) {
+        auto& hook = D3D8Hook::Instance();
+        DWORD curVS = hook.m_currentFVF;
+        pDevice->GetVertexShader(&curVS);
+
+        if (hook.m_isBorderless && (curVS & D3DFVF_XYZRHW)) {
+            IDirect3DVertexBuffer8* pVB = nullptr;
+            UINT stride = 0;
+            if (SUCCEEDED(pDevice->GetStreamSource(0, &pVB, &stride)) && pVB) {
+                if (stride >= 16 && NumVertices <= 2048) {
+                    BYTE* pLocked = nullptr;
+                    UINT lockSize = (minIndex + NumVertices) * stride;
+                    if (SUCCEEDED(pVB->Lock(0, lockSize, &pLocked, D3DLOCK_READONLY))) {
+                        const void* vStart = pLocked + (minIndex * stride);
+                        bool drop = false;
+                        static thread_local std::vector<char> s_dummy;
+                        if (s_dummy.size() < NumVertices * stride) s_dummy.resize(NumVertices * stride + 256);
+                        bool processed = hook.Process2DVertices(PrimitiveType, primCount, vStart, stride, s_dummy.data(), drop);
+                        pVB->Unlock();
+                        pVB->Release();
+                        if (drop) {
+                            return D3D_OK;
+                        }
+                        if (processed) {
+                            IDirect3DIndexBuffer8* pIB = nullptr;
+                            UINT baseVertex = 0;
+                            if (SUCCEEDED(pDevice->GetIndices(&pIB, &baseVertex)) && pIB) {
+                                D3DINDEXBUFFER_DESC ibDesc = {};
+                                pIB->GetDesc(&ibDesc);
+                                BYTE* pIndexLocked = nullptr;
+                                UINT idxSize = (ibDesc.Format == D3DFMT_INDEX16) ? 2 : 4;
+                                UINT idxCount = (PrimitiveType == D3DPT_TRIANGLESTRIP || PrimitiveType == D3DPT_TRIANGLEFAN) ? (primCount + 2) : (primCount * 3);
+                                UINT ibLockSize = (startIndex + idxCount) * idxSize;
+                                if (SUCCEEDED(pIB->Lock(0, ibLockSize, &pIndexLocked, D3DLOCK_READONLY))) {
+                                    const void* pIdxStart = pIndexLocked + (startIndex * idxSize);
+                                    HRESULT hr = hook.m_pOriginalDrawIndexedPrimitiveUP ?
+                                        hook.m_pOriginalDrawIndexedPrimitiveUP(pDevice, PrimitiveType, 0, NumVertices, primCount, pIdxStart, ibDesc.Format, s_dummy.data(), stride) : D3D_OK;
+                                    pIB->Unlock();
+                                    pIB->Release();
+                                    return hr;
+                                }
+                                pIB->Release();
+                            }
+                        }
+                    } else {
+                        pVB->Release();
+                    }
+                } else {
+                    pVB->Release();
+                }
+            }
+        }
+        return hook.m_pOriginalDrawIndexedPrimitive ? hook.m_pOriginalDrawIndexedPrimitive(pDevice, PrimitiveType, minIndex, NumVertices, startIndex, primCount) : D3D_OK;
     }
 
     HRESULT STDMETHODCALLTYPE D3D8Hook::Hooked_DrawPrimitiveUP(IDirect3DDevice8* pDevice, D3DPRIMITIVETYPE PrimitiveType, UINT PrimitiveCount, CONST void* pVertexStreamZeroData, UINT VertexStreamZeroStride) {
         auto& hook = D3D8Hook::Instance();
-        if (hook.m_isBorderless && pVertexStreamZeroData && PrimitiveCount <= 4) {
-            // Pruefe ob es sich um 2D Screen-Space Cutscene Letterbox-Balken handelt
-            if (hook.m_currentFVF & D3DFVF_XYZRHW) {
-                const char* vBytes = reinterpret_cast<const char*>(pVertexStreamZeroData);
-                struct Vertex2D { float x, y, z, rhw; DWORD color; };
-                if (VertexStreamZeroStride >= sizeof(Vertex2D)) {
-                    const Vertex2D* v0 = reinterpret_cast<const Vertex2D*>(vBytes);
-                    const Vertex2D* v1 = reinterpret_cast<const Vertex2D*>(vBytes + VertexStreamZeroStride);
-                    
-                    // Schwarze Farbe (RGB == 0)
-                    bool isBlack = ((v0->color & 0x00FFFFFF) == 0) && ((v1->color & 0x00FFFFFF) == 0);
-                    if (isBlack) {
-                        // Oberer Balken (y <= 120) oder unterer Balken (y >= 450)
-                        bool isTopBar = (v0->y <= 120.0f && v1->y <= 120.0f);
-                        bool isBottomBar = (v0->y >= 450.0f || v1->y >= 450.0f);
-                        if (isTopBar || isBottomBar) {
-                            // Letterbox Balken ueberspringen fuer sauberes 16:9 Vollbild
-                            return D3D_OK;
-                        }
+        DWORD curVS = hook.m_currentFVF;
+        pDevice->GetVertexShader(&curVS);
+
+        if (hook.m_isBorderless && pVertexStreamZeroData && (curVS & D3DFVF_XYZRHW) && VertexStreamZeroStride >= 16) {
+            static thread_local std::vector<char> s_vtxBuffer;
+            UINT vCount = (PrimitiveType == D3DPT_TRIANGLESTRIP || PrimitiveType == D3DPT_TRIANGLEFAN) ? (PrimitiveCount + 2) : (PrimitiveCount * 3);
+            if (vCount <= 2048) {
+                size_t reqBytes = vCount * VertexStreamZeroStride;
+                if (s_vtxBuffer.size() < reqBytes) {
+                    s_vtxBuffer.resize(reqBytes + 1024);
+                }
+
+                bool drop = false;
+                if (hook.Process2DVertices(PrimitiveType, PrimitiveCount, pVertexStreamZeroData, VertexStreamZeroStride, s_vtxBuffer.data(), drop)) {
+                    if (drop) {
+                        return D3D_OK;
                     }
+                    return hook.m_pOriginalDrawPrimitiveUP ? hook.m_pOriginalDrawPrimitiveUP(pDevice, PrimitiveType, PrimitiveCount, s_vtxBuffer.data(), VertexStreamZeroStride) : D3D_OK;
                 }
             }
         }
         return hook.m_pOriginalDrawPrimitiveUP ? hook.m_pOriginalDrawPrimitiveUP(pDevice, PrimitiveType, PrimitiveCount, pVertexStreamZeroData, VertexStreamZeroStride) : D3D_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE D3D8Hook::Hooked_DrawIndexedPrimitiveUP(IDirect3DDevice8* pDevice, D3DPRIMITIVETYPE PrimitiveType, UINT MinVertexIndex, UINT NumVertexIndices, UINT PrimitiveCount, CONST void* pIndexData, D3DFORMAT IndexDataFormat, CONST void* pVertexStreamZeroData, UINT VertexStreamZeroStride) {
+        auto& hook = D3D8Hook::Instance();
+        DWORD curVS = hook.m_currentFVF;
+        pDevice->GetVertexShader(&curVS);
+
+        if (hook.m_isBorderless && pVertexStreamZeroData && (curVS & D3DFVF_XYZRHW) && VertexStreamZeroStride >= 16) {
+            static thread_local std::vector<char> s_vtxBuffer;
+            UINT vCount = NumVertexIndices;
+            size_t reqBytes = vCount * VertexStreamZeroStride;
+            if (s_vtxBuffer.size() < reqBytes) {
+                s_vtxBuffer.resize(reqBytes + 1024);
+            }
+
+            bool drop = false;
+            if (hook.Process2DVertices(PrimitiveType, PrimitiveCount, pVertexStreamZeroData, VertexStreamZeroStride, s_vtxBuffer.data(), drop)) {
+                if (drop) {
+                    return D3D_OK;
+                }
+                return hook.m_pOriginalDrawIndexedPrimitiveUP ? hook.m_pOriginalDrawIndexedPrimitiveUP(pDevice, PrimitiveType, MinVertexIndex, NumVertexIndices, PrimitiveCount, pIndexData, IndexDataFormat, s_vtxBuffer.data(), VertexStreamZeroStride) : D3D_OK;
+            }
+        }
+        return hook.m_pOriginalDrawIndexedPrimitiveUP ? hook.m_pOriginalDrawIndexedPrimitiveUP(pDevice, PrimitiveType, MinVertexIndex, NumVertexIndices, PrimitiveCount, pIndexData, IndexDataFormat, pVertexStreamZeroData, VertexStreamZeroStride) : D3D_OK;
     }
 
     LRESULT CALLBACK D3D8Hook::Hooked_GameWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
@@ -1043,6 +1635,277 @@ namespace MadMultiplayer {
 
     LRESULT CALLBACK D3D8Hook::Hooked_ConsoleWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
         return D3D8Hook::Instance().HandleConsoleWndProc(hWnd, uMsg, wParam, lParam);
+    }
+
+    // 5. RENDERWARE CAMERA BEGINUPDATE HOOK (0x004D70F0)
+    // Synchronisiert viewWindow.x und Frustum-Culling kontinuierlich vor jedem Render-Pass
+    void* __cdecl D3D8Hook::Hooked_RwCameraBeginUpdate(void* camera) {
+        auto& hook = D3D8Hook::Instance();
+        if (hook.m_isBorderless && camera && hook.m_screenHeight > 0) {
+            int projType = *reinterpret_cast<int*>((char*)camera + 0x14);
+            if (projType == 1) { // rwPERSPECTIVE (3D Weltkamera)
+                float targetAspect = (float)hook.m_screenWidth / (float)hook.m_screenHeight;
+                float baseAspect = 4.0f / 3.0f; // 1.333333f
+                if (targetAspect > baseAspect) {
+                    float* pViewWindowX = reinterpret_cast<float*>((char*)camera + 0x68);
+                    float* pViewWindowY = reinterpret_cast<float*>((char*)camera + 0x6C);
+                    float* pRecipX      = reinterpret_cast<float*>((char*)camera + 0x70);
+
+                    if (*pViewWindowY > 0.001f) {
+                        float originalViewWindowX = (*pViewWindowY) * baseAspect;
+                        float targetViewWindowX = originalViewWindowX * (targetAspect / baseAspect);
+
+                        if (fabsf(*pViewWindowX - targetViewWindowX) > 0.0001f) {
+                            *pViewWindowX = targetViewWindowX;
+                            *pRecipX      = 1.0f / targetViewWindowX;
+
+                            // setFrustum (+0x10) aufrufen, um die 6 CPU-Culling Planes neu zu berechnen!
+                            using PFN_SetFrustum = void(__cdecl*)(void*);
+                            PFN_SetFrustum setFrustum = *reinterpret_cast<PFN_SetFrustum*>((char*)camera + 0x10);
+                            if (setFrustum) {
+                                setFrustum(camera);
+                            }
+
+                            static uint32_t s_lastFrustumLog = 0;
+                            if (hook.m_frameCount.load() - s_lastFrustumLog > 300) {
+                                s_lastFrustumLog = (uint32_t)hook.m_frameCount.load();
+                                MAD_LOG("[RW:CAMERA] Frustum culling planes recomputed for 16:9 Hor+ Widescreen: viewWindow.x=%.4f (Aspect: %.2f)",
+                                        targetViewWindowX, targetAspect);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return s_pOriginalRwCameraBeginUpdate ? s_pOriginalRwCameraBeginUpdate(camera) : nullptr;
+    }
+
+    // 6. 2D UI RENDER DISPATCH HOOK (RenderWare Pipeline Dispatch Table 0x0060B080 / 0x0060B0B8)
+    // Fängt alle 2D-Sprites & HUD-Quads direkt an der Quelle vor der GPU-Pufferung ab!
+    int __cdecl D3D8Hook::Hooked_Render2DQuads(int primType, void* pVertices, int numVertices) {
+        auto& hook = D3D8Hook::Instance();
+        if (!hook.m_isBorderless || hook.m_screenWidth <= 0 || hook.m_screenHeight <= 0 || !pVertices || numVertices <= 0) {
+            return s_pOriginalRender2DQuads ? s_pOriginalRender2DQuads(primType, pVertices, numVertices) : 1;
+        }
+
+        uintptr_t gameBase = (uintptr_t)GetModuleHandleA(nullptr);
+        void** ppElemHolder = reinterpret_cast<void**>(gameBase + 0x00232038); // 0x632038
+        void* elem = nullptr;
+        if (ppElemHolder && !IsBadReadPtr(ppElemHolder, sizeof(void*)) && *ppElemHolder) {
+            void* holder = *ppElemHolder;
+            if (holder && !IsBadReadPtr(holder, 0x70)) {
+                elem = *reinterpret_cast<void**>((char*)holder + 0x60);
+            }
+        }
+        // KRITISCHER FIX: Falls [0x632038] NULL ist, rufe 0x004E2640 auf, genau wie es 0x004FEFB0 intern tut!
+        if (!elem) {
+            using PFN_GetCurElem = void*(__cdecl*)();
+            PFN_GetCurElem getCurElem = reinterpret_cast<PFN_GetCurElem>(gameBase + 0x000E2640);
+            if (getCurElem) {
+                elem = getCurElem();
+            }
+        }
+
+        int16_t* pElemX = nullptr;
+        int16_t* pElemY = nullptr;
+        int16_t origElemX = 0;
+        int16_t origElemY = 0;
+
+        if (elem && !IsBadReadPtr(elem, 0x30)) {
+            pElemX = reinterpret_cast<int16_t*>((char*)elem + 0x1c);
+            pElemY = reinterpret_cast<int16_t*>((char*)elem + 0x1e);
+            origElemX = *pElemX;
+            origElemY = *pElemY;
+        }
+
+        static uint32_t s_lastUiLog = 0;
+        if (hook.m_frameCount.load() - s_lastUiLog > 300) {
+            s_lastUiLog = (uint32_t)hook.m_frameCount.load();
+            MAD_LOG("[D3D8:2D-UI] Hooked_Render2DQuads: elem=%p, origX=%d, origY=%d, vCount=%d",
+                    elem, origElemX, origElemY, numVertices);
+        }
+
+        // 1. PARKED ELEMENTS CULLING:
+        // Elemente am Rand (X >= 790 oder X <= -5) verwerfen (z.B. brauner Ballon)
+        if (origElemX >= 790 || origElemX <= -5) {
+            return 1;
+        }
+
+        float scaleY = (float)hook.m_screenHeight / 600.0f;
+        float scaleX = scaleY;
+        float virtual43Width = 800.0f * scaleX;
+        float centerOffsetX = ((float)hook.m_screenWidth - virtual43Width) * 0.5f;
+
+        // Wenn Element nicht 0,0 ist (normale HUD-Elemente: Leben, Alex-Statue, Pause-Menü etc.)
+        if (origElemX != 0 || origElemY != 0) {
+            int16_t newElemX = origElemX;
+            int16_t newElemY = (int16_t)(origElemY * scaleY);
+
+            if (origElemX < 320) {
+                // Zone Links (Marty, Leben, Pfoten): Am linken Bildschirmrand verankern
+                newElemX = (int16_t)(origElemX * scaleX);
+            }
+            else if (origElemX > 520) {
+                // Zone Rechts (Alex 43/100, Münzen, Statuen): Am rechten Bildschirmrand verankern
+                float distFromRight = (800.0f - (float)origElemX) * scaleX;
+                newElemX = (int16_t)((float)hook.m_screenWidth - distFromRight);
+            }
+            else {
+                // Zone Mitte (Pause-Menü, Banner, Prompts): Exakt im Zentrum
+                newElemX = (int16_t)(centerOffsetX + ((float)origElemX * scaleX));
+            }
+
+            if (pElemX && pElemY) {
+                *pElemX = newElemX;
+                *pElemY = newElemY;
+            }
+
+            // Lokale Vertizes des Sprites uniform skalieren (scaleX, scaleY)
+            // Vertizes: float x, y, z, rhw; DWORD color; float u, v; (28 Bytes Stride)
+            static thread_local std::vector<char> s_vtxCopy;
+            size_t reqBytes = (size_t)numVertices * 28;
+            if (s_vtxCopy.size() < reqBytes) {
+                s_vtxCopy.resize(reqBytes + 256);
+            }
+            memcpy(s_vtxCopy.data(), pVertices, reqBytes);
+
+            for (int i = 0; i < numVertices; ++i) {
+                char* p = s_vtxCopy.data() + (i * 28);
+                float* pVx = reinterpret_cast<float*>(p);
+                float* pVy = reinterpret_cast<float*>(p + 4);
+                *pVx *= scaleX;
+                *pVy *= scaleY;
+            }
+
+            int result = s_pOriginalRender2DQuads ? s_pOriginalRender2DQuads(primType, s_vtxCopy.data(), numVertices) : 1;
+
+            if (pElemX && pElemY) {
+                *pElemX = origElemX;
+                *pElemY = origElemY;
+            }
+
+            return result;
+        }
+
+        // Wenn origElemX == 0 && origElemY == 0: Pruefe Bounding Box der Vertizes
+        float minX = 999999.0f, maxX = -999999.0f;
+        float minY = 999999.0f, maxY = -999999.0f;
+        for (int i = 0; i < numVertices; ++i) {
+            const char* p = reinterpret_cast<const char*>(pVertices) + (i * 28);
+            float vx = *reinterpret_cast<const float*>(p);
+            float vy = *reinterpret_cast<const float*>(p + 4);
+            if (vx < minX) minX = vx;
+            if (vx > maxX) maxX = vx;
+            if (vy < minY) minY = vy;
+            if (vy > maxY) maxY = vy;
+        }
+
+        // Parked Elements Bounding Box Drop
+        if (minX >= 790.0f || maxX <= -5.0f) {
+            return 1;
+        }
+
+        // Letterbox-Balken abfangen
+        if (minX <= 25.0f && maxX >= 750.0f && (numVertices == 4 || numVertices == 6)) {
+            bool isTopBar = (minY <= 2.0f && maxY <= 180.0f);
+            bool isBottomBar = (minY >= 420.0f && maxY >= 598.0f);
+            if (isTopBar || isBottomBar) {
+                return 1;
+            }
+        }
+
+        // Fullscreen Tint abfangen
+        if (minX <= 10.0f && minY <= 10.0f && maxX >= 790.0f && maxY >= 590.0f) {
+            static thread_local std::vector<char> s_vtxCopy;
+            size_t reqBytes = (size_t)numVertices * 28;
+            if (s_vtxCopy.size() < reqBytes) {
+                s_vtxCopy.resize(reqBytes + 256);
+            }
+            memcpy(s_vtxCopy.data(), pVertices, reqBytes);
+            for (int i = 0; i < numVertices; ++i) {
+                char* p = s_vtxCopy.data() + (i * 28);
+                float* pVx = reinterpret_cast<float*>(p);
+                float* pVy = reinterpret_cast<float*>(p + 4);
+                *pVx = ((*pVx) / 800.0f) * (float)hook.m_screenWidth;
+                *pVy = ((*pVy) / 600.0f) * (float)hook.m_screenHeight;
+            }
+            return s_pOriginalRender2DQuads ? s_pOriginalRender2DQuads(primType, s_vtxCopy.data(), numVertices) : 1;
+        }
+
+        // Absolute Koordinaten (z.B. Text-Glyphen bei origElemX == 0)
+        float elemCenterX = (minX + maxX) * 0.5f;
+        static thread_local std::vector<char> s_vtxCopy;
+        size_t reqBytes = (size_t)numVertices * 28;
+        if (s_vtxCopy.size() < reqBytes) {
+            s_vtxCopy.resize(reqBytes + 256);
+        }
+        memcpy(s_vtxCopy.data(), pVertices, reqBytes);
+
+        if (elemCenterX < 320.0f) {
+            for (int i = 0; i < numVertices; ++i) {
+                char* p = s_vtxCopy.data() + (i * 28);
+                float* pVx = reinterpret_cast<float*>(p);
+                float* pVy = reinterpret_cast<float*>(p + 4);
+                *pVx = (*pVx) * scaleX;
+                *pVy = (*pVy) * scaleY;
+            }
+        }
+        else if (elemCenterX > 520.0f) {
+            for (int i = 0; i < numVertices; ++i) {
+                char* p = s_vtxCopy.data() + (i * 28);
+                float* pVx = reinterpret_cast<float*>(p);
+                float* pVy = reinterpret_cast<float*>(p + 4);
+                float distFromRight = (800.0f - (*pVx)) * scaleX;
+                *pVx = (float)hook.m_screenWidth - distFromRight;
+                *pVy = (*pVy) * scaleY;
+            }
+        }
+        else {
+            for (int i = 0; i < numVertices; ++i) {
+                char* p = s_vtxCopy.data() + (i * 28);
+                float* pVx = reinterpret_cast<float*>(p);
+                float* pVy = reinterpret_cast<float*>(p + 4);
+                *pVx = centerOffsetX + ((*pVx) * scaleX);
+                *pVy = (*pVy) * scaleY;
+            }
+        }
+
+        return s_pOriginalRender2DQuads ? s_pOriginalRender2DQuads(primType, s_vtxCopy.data(), numVertices) : 1;
+    }
+
+    // 4. IAT Hook fuer GetCursorPos: Konvertiert absolute Bildschirmkoordinaten
+    // in echte Client-Koordinaten und mappt diese auf den zentrierten Menue-Bereich
+    BOOL WINAPI D3D8Hook::Hooked_GetCursorPos(LPPOINT lpPoint) {
+        if (!s_pOriginalGetCursorPos || !lpPoint) return FALSE;
+        BOOL res = s_pOriginalGetCursorPos(lpPoint);
+        if (res) {
+            auto& hook = D3D8Hook::Instance();
+            HWND hWnd = hook.m_hGameWindow;
+            if (!hWnd) hWnd = FindWindowA("RWSConsoleD3D8", nullptr);
+            if (hWnd && IsWindow(hWnd)) {
+                ScreenToClient(hWnd, lpPoint);
+
+                if (hook.m_isBorderless && hook.m_screenHeight > 0 && hook.m_screenWidth > 0) {
+                    float scaleY = (float)hook.m_screenHeight / 600.0f;
+                    float scaleX = scaleY;
+                    float virtual43Width = 800.0f * scaleX;
+                    float centerOffsetX = ((float)hook.m_screenWidth - virtual43Width) * 0.5f;
+
+                    // Mappe die X-Position auf den 4:3-Zentrierungsbereich
+                    float mappedX = ((float)lpPoint->x - centerOffsetX) / scaleX;
+                    if (mappedX < 0.0f) mappedX = 0.0f;
+                    else if (mappedX > 800.0f) mappedX = 800.0f;
+
+                    float mappedY = (float)lpPoint->y / scaleY;
+                    if (mappedY < 0.0f) mappedY = 0.0f;
+                    else if (mappedY > 600.0f) mappedY = 600.0f;
+
+                    lpPoint->x = (LONG)((mappedX / 800.0f) * (float)hook.m_screenWidth);
+                    lpPoint->y = (LONG)((mappedY / 600.0f) * (float)hook.m_screenHeight);
+                }
+            }
+        }
+        return res;
     }
 
 } // namespace MadMultiplayer

@@ -190,6 +190,11 @@ void ImGui_ImplDX8_RenderDrawData(ImDrawData* draw_data) {
     dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
     dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
     dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+    dev->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
+    dev->SetRenderState(D3DRS_FOGENABLE, FALSE);
+    dev->SetRenderState(D3DRS_RANGEFOGENABLE, FALSE);
+    dev->SetRenderState(D3DRS_SPECULARENABLE, FALSE);
+    dev->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
 
     dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
     dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
@@ -197,6 +202,16 @@ void ImGui_ImplDX8_RenderDrawData(ImDrawData* draw_data) {
     dev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
     dev->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
     dev->SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
+    dev->SetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0);
+    dev->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
+    dev->SetTextureStageState(0, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
+    dev->SetTextureStageState(0, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+    dev->SetTextureStageState(0, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
+    dev->SetTextureStageState(0, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
+
+    dev->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+    dev->SetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+    dev->SetTextureStageState(1, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
 
     dev->SetVertexShader(D3DFVF_CUSTOMVERTEX);
     dev->SetStreamSource(0, bd->pVB, sizeof(CUSTOMVERTEX));
@@ -211,6 +226,17 @@ void ImGui_ImplDX8_RenderDrawData(ImDrawData* draw_data) {
     vp.MinZ = 0.0f;
     vp.MaxZ = 1.0f;
     dev->SetViewport(&vp);
+
+    // Setup orthographic projection matrix for screen space
+    D3DMATRIX ortho;
+    memset(&ortho, 0, sizeof(ortho));
+    ortho._11 = 2.0f / draw_data->DisplaySize.x;
+    ortho._22 = -2.0f / draw_data->DisplaySize.y;
+    ortho._33 = 1.0f;
+    ortho._41 = -1.0f;
+    ortho._42 = 1.0f;
+    ortho._44 = 1.0f;
+    dev->SetTransform(D3DTS_PROJECTION, &ortho);
 
     // Render command lists
     int vtx_offset = 0;
