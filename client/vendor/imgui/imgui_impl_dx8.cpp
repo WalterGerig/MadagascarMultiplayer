@@ -273,10 +273,20 @@ void ImGui_ImplDX8_RenderDrawData(ImDrawData* draw_data) {
     ortho._44 = 1.0f;
     dev->SetTransform(D3DTS_PROJECTION, &ortho);
 
+    // Obtain backbuffer dimensions for strict viewport clipping
+    D3DSURFACE_DESC bbDesc;
+    IDirect3DSurface8* pBB = nullptr;
+    if (SUCCEEDED(dev->GetBackBuffer(0, D3DBACKBUFFER_TYPE_MONO, &pBB)) && pBB) {
+        pBB->GetDesc(&bbDesc);
+        pBB->Release();
+    } else {
+        bbDesc.Width = (UINT)draw_data->DisplaySize.x;
+        bbDesc.Height = (UINT)draw_data->DisplaySize.y;
+    }
+
     // Render command lists
     int vtx_offset = 0;
     int idx_offset = 0;
-    ImVec2 clip_off = draw_data->DisplayPos;
     for (int n = 0; n < draw_data->CmdListsCount; n++) {
         const ImDrawList* cmd_list = draw_data->CmdLists[n];
         for (int cmd_i = 0; cmd_i < cmd_list->CmdBuffer.Size; cmd_i++) {
@@ -284,6 +294,28 @@ void ImGui_ImplDX8_RenderDrawData(ImDrawData* draw_data) {
             if (pcmd->UserCallback != nullptr) {
                 pcmd->UserCallback(cmd_list, pcmd);
             } else {
+                float x = pcmd->ClipRect.x;
+                float y = pcmd->ClipRect.y;
+                float w = pcmd->ClipRect.z - pcmd->ClipRect.x;
+                float h = pcmd->ClipRect.w - pcmd->ClipRect.y;
+
+                // Strict clamping to prevent out-of-bounds D3DVIEWPORT8 crashes:
+                if (x < 0.0f) { w += x; x = 0.0f; }
+                if (y < 0.0f) { h += y; y = 0.0f; }
+                if (x + w > (float)bbDesc.Width)  w = (float)bbDesc.Width - x;
+                if (y + h > (float)bbDesc.Height) h = (float)bbDesc.Height - y;
+
+                if (w <= 0.0f || h <= 0.0f) continue; // Skip offscreen geometry
+
+                D3DVIEWPORT8 vp;
+                vp.X = (DWORD)x;
+                vp.Y = (DWORD)y;
+                vp.Width = (DWORD)w;
+                vp.Height = (DWORD)h;
+                vp.MinZ = 0.0f;
+                vp.MaxZ = 1.0f;
+                dev->SetViewport(&vp);
+
                 dev->SetTexture(0, (IDirect3DBaseTexture8*)pcmd->GetTexID());
                 dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,
                                           vtx_offset + pcmd->VtxOffset,

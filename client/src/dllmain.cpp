@@ -20,7 +20,6 @@ namespace {
     MadMultiplayer::ThreadSafeTransform g_localTransformStore;
 
     void SetupDebugConsole() {
-        MadMultiplayer::Logger::InitConsole();
         printf("==================================================================\n");
         printf(" MADAGASCAR MULTIPLAYER CLIENT DLL INITIALIZED\n");
         printf(" Target Process: Game.exe (German Retail)\n");
@@ -32,8 +31,7 @@ namespace {
     }
 
     void CloseDebugConsole() {
-        printf("[MadMultiplayer] Schließe Debug-Konsole...\n");
-        FreeConsole();
+        printf("[MadMultiplayer] Beende Debug-Ausgabe...\n");
     }
 
     DWORD WINAPI MultiplayerWorkerThread(LPVOID lpParam) {
@@ -107,8 +105,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         g_hModule = hModule;
         DisableThreadLibraryCalls(hModule);
 
-        // Dedicated Win32 Debug-Konsole bedingungslos ganz am Anfang initialisieren
-        MadMultiplayer::Logger::InitConsole();
+        // Logger initialisieren (ohne sekundäre Konsole)
         MadMultiplayer::Logger::Instance().Init();
 
         // 1. Config System initialisieren

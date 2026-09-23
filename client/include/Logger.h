@@ -20,8 +20,6 @@ namespace MadMultiplayer {
         void Init();
         void Shutdown();
 
-        static void InitConsole();
-
         void Log(const char* fmt, ...);
         
         std::vector<LogMessage> GetLogs() const;

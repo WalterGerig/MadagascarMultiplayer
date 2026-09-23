@@ -384,7 +384,7 @@ namespace MadMultiplayer {
     // -------------------------------------------------------------------------
     void CheatManager::RenderMenu() {
         // Use a scrollable child window so content never overflows the screen bounds:
-        ImGui::BeginChild("CheatTabScrollRegion", ImVec2(0, 0), false, ImGuiWindowFlags_AlwaysVerticalScrollbar);
+        ImGui::BeginChild("CheatsScrollBox", ImVec2(0, 0), false, ImGuiWindowFlags_AlwaysVerticalScrollbar);
 
         bool playerValid = MemoryManager::Get().IsPlayerValid();
         PlayerTransform pt{};
