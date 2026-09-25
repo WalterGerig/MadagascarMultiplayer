@@ -1,134 +1,139 @@
 """
-Madagascar (2005) Multiplayer - High Performance UDP Relay Server
+Madagascar (2005) Multiplayer - UDP Relay Server
 Listens on UDP port 27015 and relays player state packets between Player 1 and Player 2.
 """
 
+import argparse
 import socket
 import time
-from protocol import DEFAULT_PORT, DisconnectReason
+from dataclasses import dataclass, field
+
 from packets import (
     ConnectAckPacket,
     ConnectReqPacket,
     DisconnectPacket,
     HeartbeatPacket,
+    Packet,
     PacketError,
     PlayerStatePacket,
     decode,
     encode,
 )
-import argparse
+from protocol import DEFAULT_PORT, DisconnectReason
+
+type Address = tuple[str, int]
+
+MAX_PLAYERS = 2
+FIRST_PLAYER_ID = 1001
+CLIENT_TIMEOUT_SEC = 5.0
+TIMEOUT_CHECK_INTERVAL_SEC = 1.0
+RECV_BUFFER_SIZE = 2048
 
 
+@dataclass
 class ClientSession:
-    def __init__(self, player_id: int, slot: int, addr: tuple[str, int], name: str):
-        self.player_id = player_id
-        self.slot = slot  # 0 or 1
-        self.addr = addr
-        self.name = name
-        self.last_seen = time.time()
-        self.sequence_number = 0
+    player_id: int
+    slot: int  # 0 .. MAX_PLAYERS - 1
+    addr: Address
+    name: str
+    last_seen: float = field(default_factory=time.monotonic)
 
 
 class RelayServer:
     def __init__(self, host: str = "0.0.0.0", port: int = DEFAULT_PORT):
-        self.host = host
-        self.port = port
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.bind((self.host, self.port))
-        self.sock.setblocking(False)
-        self.clients: dict[int, ClientSession] = {}  # player_id -> ClientSession
-        self.addr_to_id: dict[tuple[str, int], int] = {}
-        self.next_player_id = 1001
+        self.sock.bind((host, port))
+        # Block on recv, but wake up regularly to check for timed out clients.
+        self.sock.settimeout(TIMEOUT_CHECK_INTERVAL_SEC)
+        self.sessions: dict[Address, ClientSession] = {}
+        self.next_player_id = FIRST_PLAYER_ID
 
-        print(
-            f"[RELAY] Madagascar (2005) Multiplayer Server running on {self.host}:{self.port}"
-        )
-        print("[RELAY] Waiting for client connections (Max 2 Players)...")
+        print(f"[RELAY] Madagascar (2005) Multiplayer Server running on {host}:{port}")
+        print(f"[RELAY] Waiting for client connections (Max {MAX_PLAYERS} Players)...")
 
-    def handle_connect_req(self, packet: ConnectReqPacket, addr: tuple[str, int]):
-        if len(self.clients) >= 2:
-            print(f"[RELAY] Rejecting connect request from {addr}: Server full.")
-            self.sock.sendto(encode(0, ConnectAckPacket(0, 0, False)), addr)
+    def send(self, player_id: int, packet: Packet, addr: Address):
+        self.sock.sendto(encode(player_id, packet), addr)
+
+    def handle_connect_req(self, packet: ConnectReqPacket, addr: Address):
+        # Client retried because our ACK got lost: answer with the existing session.
+        if session := self.sessions.get(addr):
+            self.send(session.player_id, ConnectAckPacket(session.player_id, session.slot, True), addr)
             return
 
-        player_name = packet.player_name or f"Player_{self.next_player_id}"
+        if len(self.sessions) >= MAX_PLAYERS:
+            print(f"[RELAY] Rejecting connect request from {addr}: Server full.")
+            self.send(0, ConnectAckPacket(0, 0, False), addr)
+            return
 
-        assigned_slot = 0 if not any(c.slot == 0 for c in self.clients.values()) else 1
-        assigned_id = self.next_player_id
+        used_slots = {s.slot for s in self.sessions.values()}
+        slot = next(i for i in range(MAX_PLAYERS) if i not in used_slots)
+        player_id = self.next_player_id
         self.next_player_id += 1
+        name = packet.player_name or f"Player_{player_id}"
 
-        session = ClientSession(assigned_id, assigned_slot, addr, player_name)
-        self.clients[assigned_id] = session
-        self.addr_to_id[addr] = assigned_id
+        self.sessions[addr] = ClientSession(player_id, slot, addr, name)
+        print(f"[RELAY] Player joined: '{name}' (ID: {player_id}, Slot: {slot}) from {addr}")
+        self.send(player_id, ConnectAckPacket(player_id, slot, True), addr)
 
+    def disconnect(self, session: ClientSession, reason: DisconnectReason):
+        del self.sessions[session.addr]
         print(
-            f"[RELAY] Player joined: '{player_name}' (ID: {assigned_id}, Slot: {assigned_slot}) from {addr}"
+            f"[RELAY] Player disconnected: '{session.name}' "
+            f"(ID: {session.player_id}, Reason: {reason.name})"
         )
 
-        ack = ConnectAckPacket(assigned_id, assigned_slot, True)
-        self.sock.sendto(encode(assigned_id, ack), addr)
+    def relay_to_others(self, data: bytes, sender: ClientSession):
+        for session in self.sessions.values():
+            if session is not sender:
+                self.sock.sendto(data, session.addr)
 
-    def handle_disconnect(self, player_id: int, reason: DisconnectReason):
-        if player_id in self.clients:
-            session = self.clients[player_id]
-            print(
-                f"[RELAY] Player disconnected: '{session.name}' (ID: {player_id}, Reason: {reason.name})"
-            )
-            if session.addr in self.addr_to_id:
-                del self.addr_to_id[session.addr]
-            del self.clients[player_id]
+    def check_timeouts(self):
+        now = time.monotonic()
+        for session in list(self.sessions.values()):
+            if now - session.last_seen > CLIENT_TIMEOUT_SEC:
+                self.disconnect(session, DisconnectReason.TIMEOUT)
 
-    def check_timeouts(self, timeout_sec: float = 5.0):
-        now = time.time()
-        to_remove = []
-        for pid, session in self.clients.items():
-            if now - session.last_seen > timeout_sec:
-                print(f"[RELAY] Player timed out: '{session.name}' (ID: {pid})")
-                to_remove.append(pid)
-        for pid in to_remove:
-            self.handle_disconnect(pid, DisconnectReason.TIMEOUT)
+    def handle_datagram(self, data: bytes, addr: Address):
+        try:
+            header, packet = decode(data)
+        except PacketError:
+            return  # Invalid protocol, version, type or size
+
+        if isinstance(packet, ConnectReqPacket):
+            self.handle_connect_req(packet, addr)
+            return
+
+        # Everything else is only accepted from a connected client using its own ID.
+        session = self.sessions.get(addr)
+        if session is None or header.player_id != session.player_id:
+            return
+        session.last_seen = time.monotonic()
+
+        match packet:
+            case DisconnectPacket():
+                self.disconnect(session, packet.reason)
+            case HeartbeatPacket():
+                self.sock.sendto(data, addr)  # Echo back unchanged
+            case PlayerStatePacket():
+                self.relay_to_others(data, session)
 
     def run(self):
-        last_timeout_check = time.time()
+        last_timeout_check = time.monotonic()
         try:
             while True:
-                now = time.time()
-                if now - last_timeout_check > 1.0:
+                try:
+                    data, addr = self.sock.recvfrom(RECV_BUFFER_SIZE)
+                    self.handle_datagram(data, addr)
+                except TimeoutError:
+                    pass
+                except ConnectionResetError:
+                    # Windows reports ICMP "port unreachable" from an earlier sendto here.
+                    pass
+
+                now = time.monotonic()
+                if now - last_timeout_check >= TIMEOUT_CHECK_INTERVAL_SEC:
                     self.check_timeouts()
                     last_timeout_check = now
-
-                try:
-                    data, addr = self.sock.recvfrom(2048)
-                except BlockingIOError:
-                    time.sleep(0.001)  # Sleep 1ms to prevent 100% CPU spinning
-                    continue
-
-                try:
-                    header, packet = decode(data)
-                except PacketError:
-                    continue  # Invalid protocol, version, type or size
-
-                # Update keepalive for known client
-                if addr in self.addr_to_id:
-                    client_id = self.addr_to_id[addr]
-                    if client_id in self.clients:
-                        self.clients[client_id].last_seen = now
-
-                # Dispatch packet types
-                match packet:
-                    case ConnectReqPacket():
-                        self.handle_connect_req(packet, addr)
-                    case DisconnectPacket():
-                        self.handle_disconnect(header.player_id, packet.reason)
-                    case HeartbeatPacket():
-                        # Echo heartbeat back unchanged
-                        self.sock.sendto(data, addr)
-                    case PlayerStatePacket() if header.player_id in self.clients:
-                        # Relay the raw datagram to the other player (Peer-to-Peer Relay)
-                        for other_id, other_session in self.clients.items():
-                            if other_id != header.player_id:
-                                self.sock.sendto(data, other_session.addr)
-
         except KeyboardInterrupt:
             print("\n[RELAY] Shutting down server...")
         finally:
@@ -136,14 +141,11 @@ class RelayServer:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="Madagascar (2005) Multiplayer relay server")
+    parser.add_argument("--host", default="0.0.0.0", help="The address the server will bind to")
     parser.add_argument(
-        "--port",
-        help="The Port the server will listen on",
-        type=int,
-        default=DEFAULT_PORT,
+        "--port", type=int, default=DEFAULT_PORT, help="The port the server will listen on"
     )
     args = parser.parse_args()
 
-    server = RelayServer(port=args.port)
-    server.run()
+    RelayServer(args.host, args.port).run()
