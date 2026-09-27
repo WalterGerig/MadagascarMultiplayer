@@ -38,6 +38,26 @@ namespace MadMultiplayer {
         std::lock_guard<std::mutex> lock(m_mutex);
         if (m_initialized) return;
 
+        if (GetConsoleWindow() == NULL)
+        {
+            if (AllocConsole())
+            {
+                FILE* fpDummy = nullptr;
+                freopen_s(&fpDummy, "CONOUT$", "w", stdout);
+                freopen_s(&fpDummy, "CONOUT$", "w", stderr);
+                freopen_s(&fpDummy, "CONIN$", "r", stdin);
+                SetConsoleTitleA("Madagascar (2005) - Multiplayer Client Debug Console");
+
+                HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+                if (hOut != INVALID_HANDLE_VALUE) {
+                    DWORD mode = 0;
+                    if (GetConsoleMode(hOut, &mode)) {
+                        SetConsoleMode(hOut, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+                    }
+                }
+            }
+        }
+
         char path[MAX_PATH] = { 0 };
         HMODULE hMod = nullptr;
         // 1. Prioritaet: Ordner von MadMultiplayer.dll (normalerweise patches\)

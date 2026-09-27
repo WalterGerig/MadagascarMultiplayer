@@ -91,7 +91,6 @@ bool ImGui_ImplDX8_Init(IDirect3DDevice8* device) {
     ImGui_ImplDX8_Data* bd = IM_NEW(ImGui_ImplDX8_Data)();
     io.BackendRendererUserData = (void*)bd;
     io.BackendRendererName = "imgui_impl_dx8";
-    io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
 
     bd->pd3dDevice = device;
     bd->pd3dDevice->AddRef();
@@ -242,22 +241,52 @@ void ImGui_ImplDX8_RenderDrawData(ImDrawData* draw_data) {
     int vtx_offset = 0;
     int idx_offset = 0;
     ImVec2 clip_off = draw_data->DisplayPos;
-    for (int n = 0; n < draw_data->CmdListsCount; n++) {
+
+    for (int n = 0; n < draw_data->CmdListsCount; n++)
+    {
         const ImDrawList* cmd_list = draw_data->CmdLists[n];
-        for (int cmd_i = 0; cmd_i < cmd_list->CmdBuffer.Size; cmd_i++) {
+
+        // In Direct3D 8, set the BaseVertexIndex for this command list:
+        dev->SetIndices(bd->pIB, vtx_offset);
+
+        for (int cmd_i = 0; cmd_i < cmd_list->CmdBuffer.Size; cmd_i++)
+        {
             const ImDrawCmd* pcmd = &cmd_list->CmdBuffer[cmd_i];
-            if (pcmd->UserCallback != nullptr) {
+            if (pcmd->UserCallback)
+            {
                 pcmd->UserCallback(cmd_list, pcmd);
-            } else {
-                dev->SetTexture(0, (IDirect3DBaseTexture8*)pcmd->GetTexID());
-                dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,
-                                          vtx_offset + pcmd->VtxOffset,
-                                          cmd_list->VtxBuffer.Size,
-                                          idx_offset + pcmd->IdxOffset,
-                                          pcmd->ElemCount / 3);
             }
+            else
+            {
+                float x = pcmd->ClipRect.x - clip_off.x;
+                float y = pcmd->ClipRect.y - clip_off.y;
+                float w = pcmd->ClipRect.z - pcmd->ClipRect.x;
+                float h = pcmd->ClipRect.w - pcmd->ClipRect.y;
+
+                // Viewport clamping to prevent driver crashes:
+                if (x < 0.0f) { w += x; x = 0.0f; }
+                if (y < 0.0f) { h += y; y = 0.0f; }
+                if (x + w > draw_data->DisplaySize.x) w = draw_data->DisplaySize.x - x;
+                if (y + h > draw_data->DisplaySize.y) h = draw_data->DisplaySize.y - y;
+
+                if (w > 0.0f && h > 0.0f)
+                {
+                    D3DVIEWPORT8 vp;
+                    vp.X = (DWORD)x;
+                    vp.Y = (DWORD)y;
+                    vp.Width = (DWORD)w;
+                    vp.Height = (DWORD)h;
+                    vp.MinZ = 0.0f;
+                    vp.MaxZ = 1.0f;
+                    dev->SetViewport(&vp);
+
+                    dev->SetTexture(0, (IDirect3DBaseTexture8*)pcmd->GetTexID());
+                    dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, cmd_list->VtxBuffer.Size, idx_offset, pcmd->ElemCount / 3);
+                }
+            }
+            // CRITICAL: Always increment idx_offset by ElemCount, even if clipped:
+            idx_offset += pcmd->ElemCount;
         }
-        idx_offset += cmd_list->IdxBuffer.Size;
         vtx_offset += cmd_list->VtxBuffer.Size;
     }
 }

@@ -17,6 +17,7 @@ namespace MadMultiplayer {
         static Logger& Instance();
 
         void Initialize();
+        void Init() { Initialize(); }
         void Shutdown();
 
         void Log(const char* fmt, ...);

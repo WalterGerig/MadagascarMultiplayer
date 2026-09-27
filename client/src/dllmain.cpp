@@ -21,6 +21,16 @@ namespace {
     MadMultiplayer::ThreadSafeTransform g_localTransformStore;
 
     void SetupDebugConsole() {
+        if (GetConsoleWindow() == NULL) {
+            if (AllocConsole()) {
+                FILE* fpDummy = nullptr;
+                freopen_s(&fpDummy, "CONOUT$", "w", stdout);
+                freopen_s(&fpDummy, "CONOUT$", "w", stderr);
+                freopen_s(&fpDummy, "CONIN$", "r", stdin);
+                SetConsoleTitleA("Madagascar (2005) - Multiplayer Client Debug Console");
+            }
+        }
+
         HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
         if (hOut != INVALID_HANDLE_VALUE) {
             DWORD mode = 0;

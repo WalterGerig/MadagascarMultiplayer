@@ -50,7 +50,9 @@ namespace MadMultiplayer {
         void LoadWaypoint(size_t slotIdx);
         void TeleportTo(float x, float y, float z);
 
-        // 3. Authoritative Static Coin Pointer Chain (Game.exe + 0x00229628 -> 0x0C -> 0x1C -> 0x534)
+        // 3. Dual-Pointer & Manual Failsafe Coin System
+        uintptr_t GetWalletCoinAddress();
+        uintptr_t GetStatsCoinAddress();
         uintptr_t GetCoinAddress();
         bool      SetCoins(int amount);
         bool      IsCoinFreezeEnabled() const { return m_bFreezeCoins; }
@@ -58,7 +60,9 @@ namespace MadMultiplayer {
         int       GetTargetCoins() const { return m_nTargetCoins; }
         void      SetTargetCoins(int target) { m_nTargetCoins = target; }
         uintptr_t GetManualCoinAddress() const { return m_dwManualCoinAddress; }
-        void      SetManualCoinAddress(uintptr_t addr) { m_dwManualCoinAddress = addr; }
+        void      SetManualCoinAddress(uintptr_t addr);
+        bool      IsManualCoinFreezeEnabled() const { return m_bFreezeManualCoin; }
+        void      SetManualCoinFreezeEnabled(bool enabled) { m_bFreezeManualCoin = enabled; }
 
         // 4. God Mode & Modifiers
         bool IsGodModeEnabled() const { return m_godModeEnabled; }
@@ -101,7 +105,9 @@ namespace MadMultiplayer {
 
         // Authoritative Coin Pointer & Freeze
         uintptr_t m_dwManualCoinAddress{ 0 };
+        char m_manualCoinAddressHex[32]{ "" };
         bool m_bFreezeCoins{ false };
+        bool m_bFreezeManualCoin{ false };
         int  m_nTargetCoins{ 999 };
 
         // God Mode & Player Modifiers

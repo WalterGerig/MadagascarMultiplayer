@@ -46,6 +46,8 @@ namespace MadMultiplayer {
         m_flightEnabled = false;
         m_bFlightActive = false;
         m_dwManualCoinAddress = 0;
+        m_manualCoinAddressHex[0] = '\0';
+        m_bFreezeManualCoin = false;
         m_moveSpeedMultiplier = cfg.defaultMoveSpeedMultiplier;
         m_godModeEnabled = (cfg.enableGodModeDefault != 0);
         m_infiniteJumpEnabled = (cfg.enableInfiniteJumpDefault != 0);
@@ -69,72 +71,98 @@ namespace MadMultiplayer {
     }
 
     // -------------------------------------------------------------------------
-    // 1. AUTHORITATIVE STATIC COIN POINTER CHAIN
+    // 1. DUAL-POINTER & MANUAL FAILSAFE COIN SYSTEM
     //
-    // Exact 3-Level Pointer Chain:
-    // Game.exe + 0x00229628 -> Level 1 (+0x0C) -> Level 2 (+0x1C) -> Target (+0x534)
-    //
-    // Authoritative wallet variable used by game logic and Souvenir Shop.
-    // 100% data-driven, ZERO opcode hooks, no cutscene freezes or softlocks.
+    // Pointer Chain 1: Direct Level/Shop Wallet ([Game.exe + 0x211620] + 0x53C)
+    // Pointer Chain 2: Session/Stats (Game.exe + 0x229628 -> 0xC -> 0x1C -> 0x534)
+    // Manual Override: Direct memory address input for instant failsafe writing
     // -------------------------------------------------------------------------
-    static inline bool IsValidRamAddress(uintptr_t addr) {
+    static inline bool IsValidRam(uintptr_t addr) {
         return (addr >= 0x00010000 && addr <= 0x7FFE0000 && (addr % 4 == 0));
     }
 
-    uintptr_t CheatManager::GetCoinAddress()
+    uintptr_t CheatManager::GetWalletCoinAddress()
     {
-        if (m_dwManualCoinAddress != 0) {
-            __try {
-                if (IsValidRamAddress(m_dwManualCoinAddress)) {
-                    volatile int32_t val = *(volatile int32_t*)m_dwManualCoinAddress;
-                    (void)val;
-                    return m_dwManualCoinAddress;
-                }
-            } __except (EXCEPTION_EXECUTE_HANDLER) {
-                return 0;
-            }
-        }
-
         __try {
             uintptr_t hGame = (uintptr_t)GetModuleHandleA(NULL);
             if (!hGame) return 0;
 
-            uintptr_t baseSlot = hGame + 0x00229628;
-            if (!IsValidRamAddress(baseSlot)) return 0;
+            // Pointer Chain 1: Direct Level/Shop Wallet ([Game.exe + 0x211620] + 0x53C)
+            uintptr_t pBase = *(uintptr_t*)(hGame + 0x00211620);
+            if (IsValidRam(pBase)) {
+                uintptr_t walletAddr = pBase + 0x53C;
+                if (IsValidRam(walletAddr)) return walletAddr;
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        return 0;
+    }
 
-            uintptr_t p1 = *(uintptr_t*)baseSlot;
-            if (!IsValidRamAddress(p1)) return 0;
+    uintptr_t CheatManager::GetStatsCoinAddress()
+    {
+        __try {
+            uintptr_t hGame = (uintptr_t)GetModuleHandleA(NULL);
+            if (!hGame) return 0;
 
+            // Pointer Chain 2: Session/Stats (Game.exe + 0x229628 -> 0xC -> 0x1C -> 0x534)
+            uintptr_t p1 = *(uintptr_t*)(hGame + 0x00229628);
+            if (!IsValidRam(p1)) return 0;
             uintptr_t p2 = *(uintptr_t*)(p1 + 0x0C);
-            if (!IsValidRamAddress(p2)) return 0;
-
+            if (!IsValidRam(p2)) return 0;
             uintptr_t p3 = *(uintptr_t*)(p2 + 0x1C);
-            if (!IsValidRamAddress(p3)) return 0;
+            if (!IsValidRam(p3)) return 0;
+            uintptr_t statsAddr = p3 + 0x534;
+            if (IsValidRam(statsAddr)) return statsAddr;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        return 0;
+    }
 
-            uintptr_t finalTarget = p3 + 0x534;
-            if (!IsValidRamAddress(finalTarget)) return 0;
+    uintptr_t CheatManager::GetCoinAddress()
+    {
+        if (m_dwManualCoinAddress != 0 && IsValidRam(m_dwManualCoinAddress)) return m_dwManualCoinAddress;
+        uintptr_t wallet = GetWalletCoinAddress();
+        if (wallet != 0) return wallet;
+        return GetStatsCoinAddress();
+    }
 
-            volatile int32_t probe = *(volatile int32_t*)finalTarget;
-            (void)probe;
-
-            return finalTarget;
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) {
-            return 0;
-        }
+    void CheatManager::SetManualCoinAddress(uintptr_t addr)
+    {
+        m_dwManualCoinAddress = addr;
+        snprintf(m_manualCoinAddressHex, sizeof(m_manualCoinAddressHex), "%08X", (unsigned int)addr);
     }
 
     bool CheatManager::SetCoins(int amount)
     {
-        uintptr_t targetAddr = GetCoinAddress();
-        if (!targetAddr) return false;
+        bool bSuccess = false;
 
-        __try {
-            *(int32_t*)targetAddr = amount;
-            return true;
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-            return false;
+        // 1. Write to manual override address if provided by user
+        if (m_dwManualCoinAddress != 0) {
+            __try {
+                if (IsValidRam(m_dwManualCoinAddress)) {
+                    *(int32_t*)m_dwManualCoinAddress = amount;
+                    bSuccess = true;
+                }
+            } __except (EXCEPTION_EXECUTE_HANDLER) {}
         }
+
+        // 2. Write to active wallet address
+        uintptr_t wallet = GetWalletCoinAddress();
+        if (wallet != 0) {
+            __try {
+                *(int32_t*)wallet = amount;
+                bSuccess = true;
+            } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        }
+
+        // 3. Write to stats address
+        uintptr_t stats = GetStatsCoinAddress();
+        if (stats != 0) {
+            __try {
+                *(int32_t*)stats = amount;
+                bSuccess = true;
+            } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        }
+
+        return bSuccess;
     }
 
     // -------------------------------------------------------------------------
@@ -345,6 +373,15 @@ namespace MadMultiplayer {
             SetCoins(m_nTargetCoins);
         }
 
+        // Freeze Manual Address if requested
+        if (m_bFreezeManualCoin && m_dwManualCoinAddress != 0) {
+            __try {
+                if (IsValidRam(m_dwManualCoinAddress)) {
+                    *(int32_t*)m_dwManualCoinAddress = 999;
+                }
+            } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        }
+
         // Hotkey: F4 fuer Coordinate-Lock Flight
         bool curF4 = (GetAsyncKeyState(VK_F4) & 0x8000) != 0;
         if (curF4 && !m_prevFlightHotkey) {
@@ -457,26 +494,80 @@ namespace MadMultiplayer {
         // Section 2: Inventory & Coins
         if (ImGui::CollapsingHeader("Inventory & Coins", ImGuiTreeNodeFlags_DefaultOpen))
         {
-            uintptr_t coinAddr = GetCoinAddress();
-            if (coinAddr != 0) {
-                int32_t currentCoins = 0;
-                __try {
-                    currentCoins = *(int32_t*)coinAddr;
-                    ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.2f, 1.0f), "Authoritative Wallet: %d Coins (at 0x%08X)", currentCoins, coinAddr);
-                } __except (EXCEPTION_EXECUTE_HANDLER) {
-                    ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "Coin Target: Unreadable memory.");
-                }
+            uintptr_t walletAddr = GetWalletCoinAddress();
+            uintptr_t statsAddr = GetStatsCoinAddress();
 
-                if (ImGui::Button("[ Set 100 Coins (Max Level) ]")) {
-                    SetCoins(100);
-                }
-                ImGui::SameLine();
-                if (ImGui::Button("[ Set 999 Coins (Shop Wallet) ]")) {
-                    SetCoins(999);
+            // Display live values of both resolved addresses:
+            // Wallet (0x...): %d
+            // Stats (0x...): %d
+            if (walletAddr != 0) {
+                int32_t walletCoins = 0;
+                __try {
+                    walletCoins = *(int32_t*)walletAddr;
+                    ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.4f, 1.0f), "Wallet (0x%08X): %d", (unsigned int)walletAddr, walletCoins);
+                } __except (EXCEPTION_EXECUTE_HANDLER) {
+                    ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Wallet (0x%08X): [Nicht lesbar]", (unsigned int)walletAddr);
                 }
             } else {
-                ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f), "Coin Pointer: Waiting for active session wallet...");
+                ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "Wallet: [Nicht verfuegbar im Hauptmenue / Lobby]");
             }
+
+            if (statsAddr != 0) {
+                int32_t statsCoins = 0;
+                __try {
+                    statsCoins = *(int32_t*)statsAddr;
+                    ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.4f, 1.0f), "Stats (0x%08X): %d", (unsigned int)statsAddr, statsCoins);
+                } __except (EXCEPTION_EXECUTE_HANDLER) {
+                    ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Stats (0x%08X): [Nicht lesbar]", (unsigned int)statsAddr);
+                }
+            } else {
+                ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "Stats: [Warte auf aktive Spiel-Session]");
+            }
+
+            ImGui::Spacing();
+
+            // Quick Buttons: [ Set 100 Coins ] & [ Set 999 Coins ] (calls SetCoins)
+            if (ImGui::Button("[ Set 100 Coins ]", ImVec2(180, 26))) {
+                SetCoins(100);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("[ Set 999 Coins ]", ImVec2(180, 26))) {
+                SetCoins(999);
+            }
+
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            // Manual Override Box
+            ImGui::Text("Manuelle Cheat Engine Adresse (Failsafe Direct Overwrite):");
+            if (ImGui::InputText("Manuelle Cheat Engine Adresse (Hex)", m_manualCoinAddressHex, sizeof(m_manualCoinAddressHex), ImGuiInputTextFlags_CharsHexadecimal)) {
+                m_dwManualCoinAddress = (uintptr_t)strtoul(m_manualCoinAddressHex, nullptr, 16);
+            }
+
+            if (m_dwManualCoinAddress != 0) {
+                if (IsValidRam(m_dwManualCoinAddress)) {
+                    int32_t manualVal = 0;
+                    __try {
+                        manualVal = *(int32_t*)m_dwManualCoinAddress;
+                        ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Manuelle Adresse: 0x%08X | Wert: %d", (unsigned int)m_dwManualCoinAddress, manualVal);
+                    } __except (EXCEPTION_EXECUTE_HANDLER) {
+                        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Manuelle Adresse: 0x%08X [Nicht lesbar]", (unsigned int)m_dwManualCoinAddress);
+                    }
+                } else {
+                    ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Ungueltige RAM-Adresse (0x00010000 - 0x7FFE0000, 4-Byte aligned)");
+                }
+            }
+
+            if (ImGui::Button("[ 999 auf diese Adresse schreiben ]", ImVec2(280, 26))) {
+                if (m_dwManualCoinAddress != 0 && IsValidRam(m_dwManualCoinAddress)) {
+                    __try {
+                        *(int32_t*)m_dwManualCoinAddress = 999;
+                    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+                }
+            }
+            ImGui::SameLine();
+            ImGui::Checkbox("Diese Adresse einfrieren", &m_bFreezeManualCoin);
 
             ImGui::Spacing();
             ImGui::TextWrapped("Hinweis: Der HUD-Zaehler im laufenden Level aktualisiert sich erst beim Einsammeln "
