@@ -153,6 +153,7 @@ namespace MadMultiplayer {
 
         // 2. Non-Reset Widescreen Zustände (Taste 9)
         bool                  m_isBorderless{ false };
+        bool                  m_isRenderingImGui{ false };
         RECT                  m_prevWindowRect{ 0, 0, 0, 0 };
         LONG                  m_prevWindowStyle{ 0 };
         int                   m_screenWidth{ 800 };

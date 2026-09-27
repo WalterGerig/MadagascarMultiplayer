@@ -32,29 +32,55 @@ struct CUSTOMVERTEX {
 static bool ImGui_ImplDX8_CreateFontsTexture() {
     ImGuiIO& io = ImGui::GetIO();
     ImGui_ImplDX8_Data* bd = ImGui_ImplDX8_GetBackendData();
+    if (!bd || !bd->pd3dDevice) return false;
 
     unsigned char* pixels;
     int width, height;
     io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
 
-    if (bd->pd3dDevice->CreateTexture(width, height, 1, D3DUSAGE_DYNAMIC, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &bd->FontTexture) < 0) {
-        if (bd->pd3dDevice->CreateTexture(width, height, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &bd->FontTexture) < 0)
-            return false;
+    bool is16Bit = false;
+    HRESULT hr = bd->pd3dDevice->CreateTexture(width, height, 1, D3DUSAGE_DYNAMIC, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &bd->FontTexture);
+    if (FAILED(hr)) {
+        hr = bd->pd3dDevice->CreateTexture(width, height, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &bd->FontTexture);
+    }
+    if (FAILED(hr)) {
+        // Fallback fuer 16-bit Exclusive Fullscreen Display Adapter
+        hr = bd->pd3dDevice->CreateTexture(width, height, 1, 0, D3DFMT_A4R4G4B4, D3DPOOL_MANAGED, &bd->FontTexture);
+        if (SUCCEEDED(hr)) is16Bit = true;
+    }
+    if (FAILED(hr) || !bd->FontTexture) {
+        return false;
     }
 
     D3DLOCKED_RECT locked_rect;
     if (SUCCEEDED(bd->FontTexture->LockRect(0, &locked_rect, NULL, 0)))
     {
-        for (int y = 0; y < height; y++)
-        {
-            unsigned char* dest_row = (unsigned char*)locked_rect.pBits + (y * locked_rect.Pitch);
-            const unsigned char* src_row = pixels + (y * width * 4);
-            memcpy(dest_row, src_row, width * 4);
+        if (is16Bit) {
+            for (int y = 0; y < height; y++) {
+                uint16_t* dest_row = (uint16_t*)((unsigned char*)locked_rect.pBits + (y * locked_rect.Pitch));
+                const unsigned char* src_row = pixels + (y * width * 4);
+                for (int x = 0; x < width; x++) {
+                    unsigned char r = src_row[x * 4 + 0];
+                    unsigned char g = src_row[x * 4 + 1];
+                    unsigned char b = src_row[x * 4 + 2];
+                    unsigned char a = src_row[x * 4 + 3];
+                    dest_row[x] = (uint16_t)(((a >> 4) << 12) | ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4));
+                }
+            }
+        } else {
+            for (int y = 0; y < height; y++)
+            {
+                unsigned char* dest_row = (unsigned char*)locked_rect.pBits + (y * locked_rect.Pitch);
+                const unsigned char* src_row = pixels + (y * width * 4);
+                memcpy(dest_row, src_row, width * 4);
+            }
         }
         bd->FontTexture->UnlockRect(0);
     }
     else
     {
+        bd->FontTexture->Release();
+        bd->FontTexture = nullptr;
         return false;
     }
     io.Fonts->SetTexID((ImTextureID)bd->FontTexture);

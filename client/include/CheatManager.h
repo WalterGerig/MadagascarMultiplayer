@@ -51,6 +51,8 @@ namespace MadMultiplayer {
         void TeleportTo(float x, float y, float z);
 
         // 3. Verified Static Coin System & Manual Failsafe
+        uintptr_t GetWalletCoinAddress();
+        uintptr_t GetStatsCoinAddress();
         uintptr_t GetCoinAddress();
         bool      SetCoins(int amount);
         bool      IsCoinFreezeEnabled() const { return m_bFreezeCoins; }
@@ -107,6 +109,11 @@ namespace MadMultiplayer {
         bool m_bFreezeCoins{ false };
         bool m_bFreezeManualCoin{ false };
         int  m_nTargetCoins{ 999 };
+
+        // Direct Wallet Memory Target & Freeze
+        uintptr_t m_dwTargetCoinAddress = 0x0;
+        int m_nManualCoinValue = 100;
+        bool m_bFreezeTargetCoin = false;
 
         // God Mode & Player Modifiers
         bool  m_godModeEnabled{ false };

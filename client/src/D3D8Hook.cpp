@@ -888,13 +888,21 @@ namespace MadMultiplayer {
 
             ImGui_ImplDX8_NewFrame();
             ImGui_ImplWin32_NewFrame();
+            ImGuiIO& io = ImGui::GetIO();
+            if (io.DisplaySize.x <= 0.0f || io.DisplaySize.y <= 0.0f) {
+                if (m_screenWidth > 0 && m_screenHeight > 0) {
+                    io.DisplaySize = ImVec2((float)m_screenWidth, (float)m_screenHeight);
+                }
+            }
             ImGui::NewFrame();
 
             RenderOverlayUI();
 
             ImGui::EndFrame();
             ImGui::Render();
+            m_isRenderingImGui = true;
             ImGui_ImplDX8_RenderDrawData(ImGui::GetDrawData());
+            m_isRenderingImGui = false;
 
             if (bSceneStarted) {
                 pDevice->EndScene();
@@ -927,7 +935,9 @@ namespace MadMultiplayer {
             windowFlags |= ImGuiWindowFlags_NoInputs;
         }
 
-        ImGui::SetNextWindowSize(ImVec2(540, 460), ImGuiCond_FirstUseEver);
+        // Prevent the overlay from stretching across the screen in high resolutions:
+        ImGui::SetNextWindowSize(ImVec2(450.0f, 580.0f), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSizeConstraints(ImVec2(380.0f, 400.0f), ImVec2(480.0f, 650.0f));
         bool open = m_showOverlay.load();
         if (ImGui::Begin("Madagascar Multiplayer Client ###MadMultiplayerUI", &open, windowFlags)) {
             m_showOverlay.store(open);
@@ -1220,11 +1230,18 @@ namespace MadMultiplayer {
     HRESULT STDMETHODCALLTYPE D3D8Hook::Hooked_Reset(IDirect3DDevice8* pDevice, D3DPRESENT_PARAMETERS* pPresentationParameters) {
         auto& hook = D3D8Hook::Instance();
         hook.OnPreReset(pDevice);
-        MAD_LOG("[D3D8Hook] Device Reset wird ausgefuehrt (BackBuffer: %ux%u)...",
+        MAD_LOG("[D3D8Hook] Device Reset wird ausgefuehrt (BackBuffer: %ux%u, Fullscreen: %s)...",
                 pPresentationParameters ? pPresentationParameters->BackBufferWidth : 0,
-                pPresentationParameters ? pPresentationParameters->BackBufferHeight : 0);
+                pPresentationParameters ? pPresentationParameters->BackBufferHeight : 0,
+                (pPresentationParameters && !pPresentationParameters->Windowed) ? "JA" : "NEIN");
         HRESULT hr = hook.m_pOriginalReset ? hook.m_pOriginalReset(pDevice, pPresentationParameters) : D3D_OK;
         if (SUCCEEDED(hr)) {
+            if (pPresentationParameters && pPresentationParameters->BackBufferWidth > 0 && pPresentationParameters->BackBufferHeight > 0) {
+                if (!hook.m_isBorderless) {
+                    hook.m_screenWidth = (int)pPresentationParameters->BackBufferWidth;
+                    hook.m_screenHeight = (int)pPresentationParameters->BackBufferHeight;
+                }
+            }
             hook.OnPostReset(pDevice);
             MAD_LOG("[D3D8Hook] Device Reset erfolgreich abgeschlossen.");
         } else {
@@ -1236,6 +1253,9 @@ namespace MadMultiplayer {
     // FOV & Aspect Ratio Hor+ Korrektur (Slot 37: SetTransform)
     HRESULT STDMETHODCALLTYPE D3D8Hook::Hooked_SetTransform(IDirect3DDevice8* pDevice, DWORD State, CONST D3DMATRIX* pMatrix) {
         auto& hook = D3D8Hook::Instance();
+        if (hook.m_isRenderingImGui) {
+            return hook.m_pOriginalSetTransform ? hook.m_pOriginalSetTransform(pDevice, State, pMatrix) : D3D_OK;
+        }
         // State 3 = D3DTS_PROJECTION
         if (hook.m_isBorderless && State == 3 && pMatrix && hook.m_screenHeight > 0) {
             D3DMATRIX modified = *pMatrix;
@@ -1275,6 +1295,9 @@ namespace MadMultiplayer {
     // Viewport-Korrektur (Slot 40: SetViewport)
     HRESULT STDMETHODCALLTYPE D3D8Hook::Hooked_SetViewport(IDirect3DDevice8* pDevice, CONST D3DVIEWPORT8* pViewport) {
         auto& hook = D3D8Hook::Instance();
+        if (hook.m_isRenderingImGui) {
+            return hook.m_pOriginalSetViewport ? hook.m_pOriginalSetViewport(pDevice, pViewport) : D3D_OK;
+        }
         if (hook.m_isBorderless && pViewport && hook.m_screenWidth > 0 && hook.m_screenHeight > 0) {
             D3DVIEWPORT8 vp = *pViewport;
             // Falls RenderWare den Viewport auf 800x600 oder einen Sub-Viewport begrenzen will:
@@ -1468,6 +1491,9 @@ namespace MadMultiplayer {
 
     HRESULT STDMETHODCALLTYPE D3D8Hook::Hooked_DrawPrimitive(IDirect3DDevice8* pDevice, D3DPRIMITIVETYPE PrimitiveType, UINT StartVertex, UINT PrimitiveCount) {
         auto& hook = D3D8Hook::Instance();
+        if (hook.m_isRenderingImGui) {
+            return hook.m_pOriginalDrawPrimitive ? hook.m_pOriginalDrawPrimitive(pDevice, PrimitiveType, StartVertex, PrimitiveCount) : D3D_OK;
+        }
         DWORD curVS = hook.m_currentFVF;
         pDevice->GetVertexShader(&curVS);
 
@@ -1511,6 +1537,9 @@ namespace MadMultiplayer {
 
     HRESULT STDMETHODCALLTYPE D3D8Hook::Hooked_DrawIndexedPrimitive(IDirect3DDevice8* pDevice, D3DPRIMITIVETYPE PrimitiveType, UINT minIndex, UINT NumVertices, UINT startIndex, UINT primCount) {
         auto& hook = D3D8Hook::Instance();
+        if (hook.m_isRenderingImGui) {
+            return hook.m_pOriginalDrawIndexedPrimitive ? hook.m_pOriginalDrawIndexedPrimitive(pDevice, PrimitiveType, minIndex, NumVertices, startIndex, primCount) : D3D_OK;
+        }
         DWORD curVS = hook.m_currentFVF;
         pDevice->GetVertexShader(&curVS);
 
@@ -1566,6 +1595,9 @@ namespace MadMultiplayer {
 
     HRESULT STDMETHODCALLTYPE D3D8Hook::Hooked_DrawPrimitiveUP(IDirect3DDevice8* pDevice, D3DPRIMITIVETYPE PrimitiveType, UINT PrimitiveCount, CONST void* pVertexStreamZeroData, UINT VertexStreamZeroStride) {
         auto& hook = D3D8Hook::Instance();
+        if (hook.m_isRenderingImGui) {
+            return hook.m_pOriginalDrawPrimitiveUP ? hook.m_pOriginalDrawPrimitiveUP(pDevice, PrimitiveType, PrimitiveCount, pVertexStreamZeroData, VertexStreamZeroStride) : D3D_OK;
+        }
         DWORD curVS = hook.m_currentFVF;
         pDevice->GetVertexShader(&curVS);
 
@@ -1592,6 +1624,9 @@ namespace MadMultiplayer {
 
     HRESULT STDMETHODCALLTYPE D3D8Hook::Hooked_DrawIndexedPrimitiveUP(IDirect3DDevice8* pDevice, D3DPRIMITIVETYPE PrimitiveType, UINT MinVertexIndex, UINT NumVertexIndices, UINT PrimitiveCount, CONST void* pIndexData, D3DFORMAT IndexDataFormat, CONST void* pVertexStreamZeroData, UINT VertexStreamZeroStride) {
         auto& hook = D3D8Hook::Instance();
+        if (hook.m_isRenderingImGui) {
+            return hook.m_pOriginalDrawIndexedPrimitiveUP ? hook.m_pOriginalDrawIndexedPrimitiveUP(pDevice, PrimitiveType, MinVertexIndex, NumVertexIndices, PrimitiveCount, pIndexData, IndexDataFormat, pVertexStreamZeroData, VertexStreamZeroStride) : D3D_OK;
+        }
         DWORD curVS = hook.m_currentFVF;
         pDevice->GetVertexShader(&curVS);
 
