@@ -179,6 +179,19 @@ namespace MadMultiplayer {
         return true;
     }
 
+    bool MemoryManager::IsPlayerValid() {
+        PlayerTransform pt{};
+        return ReadLocalPlayer(pt) && pt.isValid;
+    }
+
+    Vector3 MemoryManager::GetPlayerPosition() {
+        PlayerTransform pt{};
+        if (ReadLocalPlayer(pt) && pt.isValid) {
+            return { pt.x, pt.y, pt.z };
+        }
+        return { 0.0f, 0.0f, 0.0f };
+    }
+
     bool MemoryManager::SetPlayerPosition(float x, float y, float z) {
         if (!m_playerEntity) {
             if (!EnsurePlayerEntity() || !m_playerEntity) {

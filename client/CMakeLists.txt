@@ -22,6 +22,7 @@ set(SOURCES
     src/MemoryManager.cpp
     src/D3D8Hook.cpp
     src/CheatManager.cpp
+    src/CrashHandler.cpp
     src/Logger.cpp
     src/Config.cpp
 
@@ -42,6 +43,7 @@ set(HEADERS
     include/NetworkProtocol.h
     include/D3D8Hook.h
     include/CheatManager.h
+    include/CrashHandler.h
     include/Logger.h
     include/Config.h
 
@@ -70,4 +72,6 @@ target_link_libraries(MadMultiplayer PRIVATE
     user32
     gdi32
     psapi
+    dbghelp
 )
+

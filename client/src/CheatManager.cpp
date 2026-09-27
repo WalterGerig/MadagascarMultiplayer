@@ -43,6 +43,9 @@ namespace MadMultiplayer {
         m_flightHotkey = VK_F4; // Hotkey F4
         m_flightSpeed = 15.0f;  // Standard: 15.0f (Bereich 1.0f - 100.0f)
         m_fFlightSpeed = 15.0f;
+        m_flightEnabled = false;
+        m_bFlightActive = false;
+        m_dwManualCoinAddress = 0;
         m_moveSpeedMultiplier = cfg.defaultMoveSpeedMultiplier;
         m_godModeEnabled = (cfg.enableGodModeDefault != 0);
         m_infiniteJumpEnabled = (cfg.enableInfiniteJumpDefault != 0);
@@ -74,43 +77,64 @@ namespace MadMultiplayer {
     // Authoritative wallet variable used by game logic and Souvenir Shop.
     // 100% data-driven, ZERO opcode hooks, no cutscene freezes or softlocks.
     // -------------------------------------------------------------------------
-    uintptr_t CheatManager::GetCoinAddress() {
-        uintptr_t hGameModule = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
-        if (!hGameModule) return 0;
-
-        // Dereference Level 0 -> Level 1 (Game.exe + 0x00229628)
-        uintptr_t pBase = hGameModule + 0x00229628;
-        if (IsBadReadPtr(reinterpret_cast<void*>(pBase), sizeof(uintptr_t))) return 0;
-        uintptr_t pLevel1 = *reinterpret_cast<uintptr_t*>(pBase);
-        if (!pLevel1 || IsBadReadPtr(reinterpret_cast<void*>(pLevel1 + 0x0C), sizeof(uintptr_t))) return 0;
-
-        // Dereference Level 1 -> Level 2 (+0x0C)
-        uintptr_t pLevel2 = *reinterpret_cast<uintptr_t*>(pLevel1 + 0x0C);
-        if (!pLevel2 || IsBadReadPtr(reinterpret_cast<void*>(pLevel2 + 0x1C), sizeof(uintptr_t))) return 0;
-
-        // Dereference Level 2 -> Level 3 (+0x1C)
-        uintptr_t pLevel3 = *reinterpret_cast<uintptr_t*>(pLevel2 + 0x1C);
-        if (!pLevel3 || IsBadReadPtr(reinterpret_cast<void*>(pLevel3 + 0x534), sizeof(int32_t))) return 0;
-
-        // Final Target Address (+0x534)
-        uintptr_t finalCoinAddr = pLevel3 + 0x534;
-        return finalCoinAddr;
+    static inline bool IsValidRamAddress(uintptr_t addr) {
+        return (addr >= 0x00010000 && addr <= 0x7FFE0000 && (addr % 4 == 0));
     }
 
-    bool CheatManager::SetCoins(int amount) {
-        uintptr_t targetAddr = GetCoinAddress();
-        if (!targetAddr || IsBadWritePtr(reinterpret_cast<void*>(targetAddr), sizeof(int32_t))) {
-            MAD_LOG("[CheatManager] SetCoins failed: Invalid pointer target.");
-            return false;
+    uintptr_t CheatManager::GetCoinAddress()
+    {
+        if (m_dwManualCoinAddress != 0) {
+            __try {
+                if (IsValidRamAddress(m_dwManualCoinAddress)) {
+                    volatile int32_t val = *(volatile int32_t*)m_dwManualCoinAddress;
+                    (void)val;
+                    return m_dwManualCoinAddress;
+                }
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                return 0;
+            }
         }
 
-        *reinterpret_cast<int32_t*>(targetAddr) = amount;
+        __try {
+            uintptr_t hGame = (uintptr_t)GetModuleHandleA(NULL);
+            if (!hGame) return 0;
 
-        // Synchronisiere auch den MemoryManager-Spiegel falls verfuegbar
-        MemoryManager::Get().WriteCoins(amount);
+            uintptr_t baseSlot = hGame + 0x00229628;
+            if (!IsValidRamAddress(baseSlot)) return 0;
 
-        MAD_LOG("[CheatManager] Authoritative wallet balance set to %d at 0x%08X", amount, (unsigned int)targetAddr);
-        return true;
+            uintptr_t p1 = *(uintptr_t*)baseSlot;
+            if (!IsValidRamAddress(p1)) return 0;
+
+            uintptr_t p2 = *(uintptr_t*)(p1 + 0x0C);
+            if (!IsValidRamAddress(p2)) return 0;
+
+            uintptr_t p3 = *(uintptr_t*)(p2 + 0x1C);
+            if (!IsValidRamAddress(p3)) return 0;
+
+            uintptr_t finalTarget = p3 + 0x534;
+            if (!IsValidRamAddress(finalTarget)) return 0;
+
+            volatile int32_t probe = *(volatile int32_t*)finalTarget;
+            (void)probe;
+
+            return finalTarget;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            return 0;
+        }
+    }
+
+    bool CheatManager::SetCoins(int amount)
+    {
+        uintptr_t targetAddr = GetCoinAddress();
+        if (!targetAddr) return false;
+
+        __try {
+            *(int32_t*)targetAddr = amount;
+            return true;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -118,6 +142,7 @@ namespace MadMultiplayer {
     // -------------------------------------------------------------------------
     void CheatManager::SetFlightEnabled(bool enabled) {
         m_flightEnabled = enabled;
+        m_bFlightActive = enabled;
         auto& mem = MemoryManager::Get();
         if (enabled) {
             PlayerTransform cur{};
@@ -313,12 +338,11 @@ namespace MadMultiplayer {
             deltaTime = 0.0166f;
         }
 
+        m_flightSpeed = m_fFlightSpeed;
+
         // Freeze Coins at Target Value
         if (m_bFreezeCoins) {
-            uintptr_t coinAddr = GetCoinAddress();
-            if (coinAddr && !IsBadWritePtr(reinterpret_cast<void*>(coinAddr), sizeof(int32_t))) {
-                *reinterpret_cast<int32_t*>(coinAddr) = m_nTargetCoins;
-            }
+            SetCoins(m_nTargetCoins);
         }
 
         // Hotkey: F4 fuer Coordinate-Lock Flight
@@ -357,177 +381,142 @@ namespace MadMultiplayer {
     // -------------------------------------------------------------------------
     // 5. IMGUI UI LAYOUT ([ Cheats & Sandbox ])
     // -------------------------------------------------------------------------
-    void CheatManager::RenderMenu() {
-        PlayerTransform pt{};
-        bool playerReady = MemoryManager::Get().ReadLocalPlayer(pt) && pt.isValid;
+    void CheatManager::RenderMenu()
+    {
+        ImGui::BeginChild("CheatScrollBox", ImVec2(0, 0), false, ImGuiWindowFlags_AlwaysVerticalScrollbar);
 
-        // ---------------------------------------------------------------------
-        // SECTION 1: MOVEMENT & FLIGHT
-        // ---------------------------------------------------------------------
-        if (ImGui::CollapsingHeader("✈  Movement & Coordinate-Lock Flight", ImGuiTreeNodeFlags_DefaultOpen)) {
-            bool flight = m_flightEnabled;
-            if (ImGui::Checkbox("Enable Coordinate-Lock Flight (HotKey: F4)", &flight)) {
-                SetFlightEnabled(flight);
-            }
-            ImGui::SameLine();
-            if (m_flightEnabled) {
-                ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f), "[ACTIVE - Position Locked & Gravity Free]");
-            } else {
-                ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "[Inactive - Press F4 or N]");
-            }
-
-            ImGui::SliderFloat("Flight Speed", &m_flightSpeed, 1.0f, 100.0f, "%.1f");
-            ImGui::TextDisabled("Controls:\n  • W / S: Forward / Backward along Yaw\n  • A / D: Strafe Left / Right\n  • Space: Ascend (+Y)\n  • Left Shift / C: Descend (-Y)\n  • In-Air Freezing: When no vertical key is pressed, altitude is frozen in-place!");
-        }
-
-        ImGui::Spacing();
-
-        // ---------------------------------------------------------------------
-        // SECTION 2: TELEPORT & COORDINATES
-        // ---------------------------------------------------------------------
-        if (ImGui::CollapsingHeader("📍  Teleport & Coordinates", ImGuiTreeNodeFlags_DefaultOpen)) {
-            if (playerReady) {
-                ImGui::Text("Live Position: X = %.2f | Y = %.2f (Height) | Z = %.2f | Yaw = %.2f rad", pt.x, pt.y, pt.z, pt.yaw);
-            } else {
-                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Player entity not active (Menu or Loading)");
-            }
-
-            ImGui::Separator();
-            ImGui::InputFloat3("Target Coordinates (X, Y, Z)", m_targetPos, "%.2f");
-
-            if (ImGui::Button("Teleport to Target [Teleport Now]", ImVec2(240, 26))) {
-                TeleportTo(m_targetPos[0], m_targetPos[1], m_targetPos[2]);
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Current Pos (+1.0m Safe Height)")) {
-                if (playerReady) {
-                    m_targetPos[0] = pt.x;
-                    m_targetPos[1] = pt.y + 1.0f;
-                    m_targetPos[2] = pt.z;
+        // Section 1: Movement & Teleport
+        if (ImGui::CollapsingHeader("Movement & Teleport", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            if (MemoryManager::Get().IsPlayerValid()) {
+                Vector3 pos = MemoryManager::Get().GetPlayerPosition();
+                ImGui::Text("Live Position: X = %.2f | Y = %.2f | Z = %.2f", pos.x, pos.y, pos.z);
+                if (ImGui::Checkbox("Enable Coordinate-Lock Flight (F4)", &m_bFlightActive)) {
+                    SetFlightEnabled(m_bFlightActive);
                 }
-            }
+                if (ImGui::SliderFloat("Flight Speed", &m_fFlightSpeed, 1.0f, 100.0f)) {
+                    m_flightSpeed = m_fFlightSpeed;
+                }
 
-            ImGui::Spacing();
-            ImGui::Text("Checkpoint Slots (Save / Load Waypoints):");
-            for (size_t i = 0; i < m_waypoints.size(); ++i) {
-                ImGui::PushID(static_cast<int>(i));
-                ImGui::Text("%s", m_waypoints[i].label);
-                ImGui::SameLine(320);
-                char saveLabel[32];
-                snprintf(saveLabel, sizeof(saveLabel), "Save Slot %zu", i + 1);
-                if (ImGui::Button(saveLabel)) {
-                    SaveWaypoint(i);
+                // Teleport widgets
+                ImGui::Separator();
+                ImGui::InputFloat3("Target Coordinates (X, Y, Z)", m_targetPos, "%.2f");
+
+                if (ImGui::Button("Teleport to Target [Teleport Now]", ImVec2(240, 26))) {
+                    TeleportTo(m_targetPos[0], m_targetPos[1], m_targetPos[2]);
                 }
                 ImGui::SameLine();
-                char loadLabel[32];
-                snprintf(loadLabel, sizeof(loadLabel), "Load Slot %zu", i + 1);
-                if (ImGui::Button(loadLabel)) {
-                    LoadWaypoint(i);
+                if (ImGui::Button("Current Pos (+1.0m Safe Height)")) {
+                    m_targetPos[0] = pos.x;
+                    m_targetPos[1] = pos.y + 1.0f;
+                    m_targetPos[2] = pos.z;
                 }
-                ImGui::PopID();
-            }
 
-            ImGui::Spacing();
-            ImGui::Text("Level & Map Presets:");
-            const char* presetNames[g_numMapPresets];
-            for (int i = 0; i < g_numMapPresets; ++i) presetNames[i] = g_mapPresets[i].name;
+                ImGui::Spacing();
+                ImGui::Text("Checkpoint Slots (Save / Load Waypoints):");
+                for (size_t i = 0; i < m_waypoints.size(); ++i) {
+                    ImGui::PushID(static_cast<int>(i));
+                    ImGui::Text("%s", m_waypoints[i].label);
+                    ImGui::SameLine(320);
+                    char saveLabel[32];
+                    snprintf(saveLabel, sizeof(saveLabel), "Save Slot %zu", i + 1);
+                    if (ImGui::Button(saveLabel)) {
+                        SaveWaypoint(i);
+                    }
+                    ImGui::SameLine();
+                    char loadLabel[32];
+                    snprintf(loadLabel, sizeof(loadLabel), "Load Slot %zu", i + 1);
+                    if (ImGui::Button(loadLabel)) {
+                        LoadWaypoint(i);
+                    }
+                    ImGui::PopID();
+                }
 
-            ImGui::Combo("Preset Area", &m_selectedPreset, presetNames, g_numMapPresets);
-            if (ImGui::Button("Teleport to Preset Area", ImVec2(220, 24))) {
-                const auto& pr = g_mapPresets[m_selectedPreset];
-                TeleportTo(pr.x, pr.y, pr.z);
-            }
-        }
+                ImGui::Spacing();
+                ImGui::Text("Level & Map Presets:");
+                const char* presetNames[g_numMapPresets];
+                for (int i = 0; i < g_numMapPresets; ++i) presetNames[i] = g_mapPresets[i].name;
 
-        ImGui::Spacing();
-
-        // ---------------------------------------------------------------------
-        // SECTION 3: INVENTORY & COINS (AUTHORITATIVE POINTER CHAIN)
-        // ---------------------------------------------------------------------
-        if (ImGui::CollapsingHeader("🪙  Inventory & Coins", ImGuiTreeNodeFlags_DefaultOpen)) {
-            uintptr_t targetAddr = GetCoinAddress();
-            int32_t currentVal = 0;
-            bool isValid = (targetAddr != 0);
-            if (isValid) {
-                currentVal = *reinterpret_cast<int32_t*>(targetAddr);
-            }
-
-            ImGui::Text("Authoritative Wallet Pointer: ");
-            ImGui::SameLine();
-            if (isValid) {
-                ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.4f, 1.0f), "0x%08X [CONNECTED]", (unsigned int)targetAddr);
-                ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.2f, 1.0f), "Current Authoritative Coins: %d (at 0x%08X)", currentVal, (unsigned int)targetAddr);
+                ImGui::Combo("Preset Area", &m_selectedPreset, presetNames, g_numMapPresets);
+                if (ImGui::Button("Teleport to Preset Area", ImVec2(220, 24))) {
+                    const auto& pr = g_mapPresets[m_selectedPreset];
+                    TeleportTo(pr.x, pr.y, pr.z);
+                }
             } else {
-                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Coins Pointer: Waiting for player instance...");
+                ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.0f, 1.0f), "[Status: No Player Spawned - Main Menu / Lobby / Loading]");
+                ImGui::BeginDisabled();
+                ImGui::Button("Teleport to Target [Disabled]");
+                ImGui::EndDisabled();
             }
-
-            ImGui::Separator();
-
-            // Action Controls
-            if (ImGui::Button("+50 Coins", ImVec2(120, 26))) {
-                SetCoins(isValid ? (currentVal + 50) : 50);
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Set 100 Coins (Level Max)", ImVec2(185, 26))) {
-                SetCoins(100);
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Set 999 Coins (Shop Wallet)", ImVec2(195, 26))) {
-                SetCoins(999);
-            }
-
-            ImGui::Spacing();
-            ImGui::Checkbox("Freeze Coins at Value", &m_bFreezeCoins);
-            ImGui::SameLine();
-            ImGui::SetNextItemWidth(120);
-            ImGui::InputInt("##TargetCoins", &m_nTargetCoins, 1, 100);
-
-            ImGui::Spacing();
-
-            // Framed Notice Text Box
-            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.3f, 0.6f, 0.9f, 0.6f));
-            ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 4.0f);
-            ImGui::BeginChild("CoinNoticeBox", ImVec2(0, 75), true);
-            ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "ℹ  Wichtiger Hinweis zur Münz-Synchronisation:");
-            ImGui::TextWrapped("Hinweis: Der HUD-Zähler im laufenden Level aktualisiert sich erst beim Einsammeln "
-                               "einer weiteren Münze, beim Levelwechsel oder direkt im Souvenir-Shop. "
-                               "Die Münzen sind im Spiel und im Shop sofort voll verfügbar und abrechenbar!");
-            ImGui::EndChild();
-            ImGui::PopStyleVar();
-            ImGui::PopStyleColor();
         }
 
         ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
 
-        // ---------------------------------------------------------------------
-        // SECTION 4: GOD MODE & PLAYER MODIFIERS
-        // ---------------------------------------------------------------------
-        if (ImGui::CollapsingHeader("🛡  God Mode & Player Modifiers")) {
-            ImGui::Checkbox("God Mode (Invulnerability / Lock HP)", &m_godModeEnabled);
-            ImGui::SameLine();
-            if (m_godModeEnabled) {
-                ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f), "[ACTIVE]");
+        // Section 2: Inventory & Coins
+        if (ImGui::CollapsingHeader("Inventory & Coins", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            uintptr_t coinAddr = GetCoinAddress();
+            if (coinAddr != 0) {
+                int32_t currentCoins = 0;
+                __try {
+                    currentCoins = *(int32_t*)coinAddr;
+                    ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.2f, 1.0f), "Authoritative Wallet: %d Coins (at 0x%08X)", currentCoins, coinAddr);
+                } __except (EXCEPTION_EXECUTE_HANDLER) {
+                    ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "Coin Target: Unreadable memory.");
+                }
+
+                if (ImGui::Button("[ Set 100 Coins (Max Level) ]")) {
+                    SetCoins(100);
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("[ Set 999 Coins (Shop Wallet) ]")) {
+                    SetCoins(999);
+                }
+            } else {
+                ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f), "Coin Pointer: Waiting for active session wallet...");
             }
-
-            ImGui::SliderInt("Target HP", &m_customHealthValue, 1, 200);
-            if (ImGui::Button("Restore Full Health (100 HP)", ImVec2(240, 24))) {
-                ApplyFullHealth();
-            }
-
-            ImGui::Separator();
-            ImGui::Checkbox("Infinite Jump (Mid-Air Jump on Space)", &m_infiniteJumpEnabled);
-            ImGui::SliderFloat("Super Jump Multiplier", &m_superJumpMultiplier, 1.0f, 5.0f, "%.1fx");
-            ImGui::SliderFloat("Movement Speed Multiplier", &m_moveSpeedMultiplier, 1.0f, 5.0f, "%.1fx");
 
             ImGui::Spacing();
-            if (ImGui::Button("Refill Mango Ammo (99)", ImVec2(200, 24))) {
-                ApplyRefillMangoes();
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Max Tokens (100)", ImVec2(160, 24))) {
-                ApplyMaxPawTokens();
+            ImGui::TextWrapped("Hinweis: Der HUD-Zaehler im laufenden Level aktualisiert sich erst beim Einsammeln "
+                               "einer weiteren Muenze, beim Levelwechsel oder direkt im Souvenir-Shop. "
+                               "Die Muenzen sind im Spiel und im Shop sofort voll verfuegbar!");
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        // Section 3: God Mode & Player Modifiers
+        if (ImGui::CollapsingHeader("God Mode & Modifiers"))
+        {
+            if (MemoryManager::Get().IsPlayerValid()) {
+                ImGui::Checkbox("God Mode (Invulnerability / Lock HP)", &m_godModeEnabled);
+                ImGui::SliderInt("Target HP", &m_customHealthValue, 1, 200);
+                if (ImGui::Button("Restore Full Health (100 HP)", ImVec2(240, 24))) {
+                    ApplyFullHealth();
+                }
+
+                ImGui::Separator();
+                ImGui::Checkbox("Infinite Jump (Mid-Air Jump on Space)", &m_infiniteJumpEnabled);
+                ImGui::SliderFloat("Super Jump Multiplier", &m_superJumpMultiplier, 1.0f, 5.0f, "%.1fx");
+                ImGui::SliderFloat("Movement Speed Multiplier", &m_moveSpeedMultiplier, 1.0f, 5.0f, "%.1fx");
+
+                ImGui::Spacing();
+                if (ImGui::Button("Refill Mango Ammo (99)", ImVec2(200, 24))) {
+                    ApplyRefillMangoes();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Max Tokens (100)", ImVec2(160, 24))) {
+                    ApplyMaxPawTokens();
+                }
+            } else {
+                ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.0f, 1.0f), "[Status: No Player Spawned - Main Menu / Lobby / Loading]");
             }
         }
+
+        ImGui::EndChild();
     }
 
 } // namespace MadMultiplayer

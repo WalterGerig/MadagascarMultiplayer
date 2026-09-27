@@ -46,6 +46,10 @@ namespace MadMultiplayer {
         // Liest den aktuellen Spielerzustand thread-sicher und SEH-abgesichert aus
         bool ReadLocalPlayer(PlayerTransform& outTransform);
 
+        // Prueft, ob die Spieler-Entity gueltig und im Spiel aktiv ist
+        bool IsPlayerValid();
+        Vector3 GetPlayerPosition();
+
         // Schreibt neue Koordinaten in die Spieler-Entity (bulletproof, keine spekulativen Physics-Writes)
         bool SetPlayerPosition(float x, float y, float z);
         bool WriteLocalPosition(float x, float y, float z) { return SetPlayerPosition(x, y, z); }

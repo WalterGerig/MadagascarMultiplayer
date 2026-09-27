@@ -8,12 +8,6 @@
 
 namespace MadMultiplayer {
 
-    struct Vector3 {
-        float x{ 0.0f };
-        float y{ 0.0f };
-        float z{ 0.0f };
-    };
-
     struct WaypointSlot {
         bool    isValid{ false };
         Vector3 pos{ 0.0f, 0.0f, 0.0f };
@@ -63,6 +57,8 @@ namespace MadMultiplayer {
         void      SetCoinFreezeEnabled(bool enabled) { m_bFreezeCoins = enabled; }
         int       GetTargetCoins() const { return m_nTargetCoins; }
         void      SetTargetCoins(int target) { m_nTargetCoins = target; }
+        uintptr_t GetManualCoinAddress() const { return m_dwManualCoinAddress; }
+        void      SetManualCoinAddress(uintptr_t addr) { m_dwManualCoinAddress = addr; }
 
         // 4. God Mode & Modifiers
         bool IsGodModeEnabled() const { return m_godModeEnabled; }
@@ -90,6 +86,7 @@ namespace MadMultiplayer {
 
         // Flight / Noclip (Coordinate-Lock & Altitude Freeze)
         bool    m_flightEnabled{ false };
+        bool    m_bFlightActive{ false };
         float   m_flightSpeed{ 15.0f }; // Standard: 15.0f
         float   m_fFlightSpeed{ 15.0f };
         int     m_flightHotkey{ VK_F4 }; // Hotkey F4
@@ -103,6 +100,7 @@ namespace MadMultiplayer {
         std::array<WaypointSlot, 3> m_waypoints{};
 
         // Authoritative Coin Pointer & Freeze
+        uintptr_t m_dwManualCoinAddress{ 0 };
         bool m_bFreezeCoins{ false };
         int  m_nTargetCoins{ 999 };
 

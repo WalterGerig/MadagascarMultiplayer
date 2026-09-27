@@ -4,6 +4,7 @@
 #include <chrono>
 #include <thread>
 
+#include "../include/CrashHandler.h"
 #include "../include/MemoryManager.h"
 #include "../include/PlayerTransform.h"
 #include "../include/D3D8Hook.h"
@@ -20,36 +21,26 @@ namespace {
     MadMultiplayer::ThreadSafeTransform g_localTransformStore;
 
     void SetupDebugConsole() {
-        if (AllocConsole()) {
-            FILE* fDummy = nullptr;
-            freopen_s(&fDummy, "CONOUT$", "w", stdout);
-            freopen_s(&fDummy, "CONOUT$", "w", stderr);
-            freopen_s(&fDummy, "CONIN$", "r", stdin);
-
-            SetConsoleTitleA("Madagascar (2005) - Multiplayer Client Debug Console");
-
-            HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
-            if (hOut != INVALID_HANDLE_VALUE) {
-                DWORD mode = 0;
-                if (GetConsoleMode(hOut, &mode)) {
-                    SetConsoleMode(hOut, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
-                }
+        HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+        if (hOut != INVALID_HANDLE_VALUE) {
+            DWORD mode = 0;
+            if (GetConsoleMode(hOut, &mode)) {
+                SetConsoleMode(hOut, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
             }
-
-            printf("==================================================================\n");
-            printf(" MADAGASCAR MULTIPLAYER CLIENT DLL INITIALIZED\n");
-            printf(" Target Process: Game.exe (German Retail)\n");
-            printf(" DirectX 8 Hook: EndScene & Reset VTable Hook Active\n");
-            printf(" UI Backend:     Dear ImGui\n");
-            printf(" Config File:    patches/multiplayer_config.ini\n");
-            printf(" Log File:       multiplayer_debug.log\n");
-            printf("==================================================================\n\n");
         }
+
+        printf("==================================================================\n");
+        printf(" MADAGASCAR MULTIPLAYER CLIENT DLL INITIALIZED\n");
+        printf(" Target Process: Game.exe (German Retail)\n");
+        printf(" DirectX 8 Hook: EndScene & Reset VTable Hook Active\n");
+        printf(" UI Backend:     Dear ImGui\n");
+        printf(" Config File:    patches/multiplayer_config.ini\n");
+        printf(" Log File:       multiplayer_debug.log\n");
+        printf("==================================================================\n\n");
     }
 
     void CloseDebugConsole() {
-        printf("[MadMultiplayer] Schließe Debug-Konsole...\n");
-        FreeConsole();
+        printf("[MadMultiplayer] Schließe Modul...\n");
     }
 
     DWORD WINAPI MultiplayerWorkerThread(LPVOID lpParam) {
@@ -120,6 +111,7 @@ extern "C" __declspec(dllexport) void __cdecl MadPatchInit(void) {
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
     switch (ul_reason_for_call) {
     case DLL_PROCESS_ATTACH: {
+        MadMultiplayer::CrashHandler::Install();
         g_hModule = hModule;
         DisableThreadLibraryCalls(hModule);
 
