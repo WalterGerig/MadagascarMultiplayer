@@ -41,3 +41,6 @@ namespace MadMultiplayer {
 
 // Helper Macro
 #define MAD_LOG(fmt, ...) MadMultiplayer::Logger::Instance().Log(fmt, ##__VA_ARGS__)
+#define LOG_INFO(fmt, ...)  MAD_LOG("[INFO] " fmt, ##__VA_ARGS__)
+#define LOG_WARN(fmt, ...)  MAD_LOG("[WARN] " fmt, ##__VA_ARGS__)
+#define LOG_ERROR(fmt, ...) MAD_LOG("[ERROR] " fmt, ##__VA_ARGS__)

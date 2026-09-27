@@ -50,9 +50,7 @@ namespace MadMultiplayer {
         void LoadWaypoint(size_t slotIdx);
         void TeleportTo(float x, float y, float z);
 
-        // 3. Dual-Pointer & Manual Failsafe Coin System
-        uintptr_t GetWalletCoinAddress();
-        uintptr_t GetStatsCoinAddress();
+        // 3. Verified Static Coin System & Manual Failsafe
         uintptr_t GetCoinAddress();
         bool      SetCoins(int amount);
         bool      IsCoinFreezeEnabled() const { return m_bFreezeCoins; }
